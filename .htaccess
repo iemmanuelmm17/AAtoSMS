@@ -1,0 +1,28 @@
+# Safety net for Apache - normally this file is never read.
+#
+# The web server should serve ONLY the "public" folder (README, "Web server"). If this
+# whole project folder ends up inside a web site anyway, the rules below (and the
+# .htaccess files in src, var, tests and bin) refuse the private parts: the settings
+# (.env), this folder's other files, and the Git data.
+#
+# They only work where Apache reads .htaccess files (AllowOverride). Do not rely on
+# them: serve the "public" folder only.
+
+# Files whose name starts with a dot (.env, .env.example, .gitignore ...) and the
+# project files that sit next to them.
+<IfModule mod_authz_core.c>
+    <FilesMatch "^(\..*|README\.md|web\.config)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "^(\..*|README\.md|web\.config)$">
+        Order allow,deny
+        Deny from all
+    </FilesMatch>
+</IfModule>
+
+# Folders whose name starts with a dot (.git, .github).
+<IfModule mod_alias.c>
+    RedirectMatch 404 "/\.git"
+</IfModule>
