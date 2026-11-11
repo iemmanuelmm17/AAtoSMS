@@ -22,6 +22,7 @@ declare(strict_types=1);
 namespace AAtoSMS\Tests;
 
 use AAtoSMS\ApiException;
+use AAtoSMS\Config;
 use AAtoSMS\NetSapiens;
 use AAtoSMS\Response;
 
@@ -539,14 +540,14 @@ test('http: calls that arrive together cannot exceed the limit per destination',
     same(3, count($texts()) - $before, 'texts sent (the limit is 3)');
 });
 
-test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts): void {
+test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts, $folder): void {
     $before = count($texts());
     $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000']));
     same(200, $report->status);
     same('text/plain; charset=UTF-8', $report->headers['Content-Type'] ?? null);
     contains($ownServers ? '(cli-server, ' : '  [ OK ] PHP ' . PHP_MAJOR_VERSION . '.', $report->body, 'report');
     contains('  [ OK ] this page was reached as ' . $scriptPath, $report->body, 'report');
-    contains('  [ OK ] settings are valid', $report->body, 'report');
+    contains($ownServers ? '  [ OK ] ' . Config::nativePath($folder . '/.env') . " is valid\n         API " : ' is valid', $report->body, 'report');
     contains(' can be written by this PHP', $report->body, 'report');
     contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $report->body, 'report');
@@ -578,6 +579,59 @@ test('http: log and stored data', function () use ($folder, $log): void {
     same('[]', file_get_contents($folder . '/var/sent/2125550147.json'), 'the text that the API refused is not counted');
     same(3, count(json_decode((string) file_get_contents($folder . '/var/sent/3125550188.json'), true)), 'texts counted for the number that reached the limit');
 });
+
+// ---------------------------------------------------------------------------
+// The settings file in another folder than the project
+// ---------------------------------------------------------------------------
+
+if ($ownServers) {
+    test('http: .env is kept in another folder, and env-path.txt in the project folder says where', function () use (&$servers, $folder, $apiPort, $api): void {
+        // A project folder of its own, so that the files of this checkout are left alone. Its
+        // index.php does what public/index.php does, with the application code of this checkout.
+        $project = $folder . '/moved/www/aatosms';
+        $private = $folder . '/moved/private settings';
+        mkdir($project . '/public', 0700, true);
+        mkdir($private, 0700, true);
+        file_put_contents(
+            $project . '/public/index.php',
+            '<?php require ' . var_export(dirname(__DIR__) . '/src/bootstrap.php', true) . '; AAtoSMS\\App::run(dirname(__DIR__));'
+        );
+        file_put_contents($private . '/.env', settings($folder, $apiPort));
+        file_put_contents($project . '/' . Config::ENV_POINTER, "# written by tests/http.php\r\n\"" . Config::nativePath($private) . "\"\r\n");
+
+        [$port] = freePorts(1);
+        $servers['moved'] = startServer(
+            ['-S', '127.0.0.1:' . $port, '-t', $project . '/public'],
+            $folder . '/moved-server.log',
+            ['AATOSMS_ENV_FILE' => '']
+        );
+        $moved = 'http://127.0.0.1:' . $port . '/index.php';
+        ok(answers($moved), 'the web server of the second project folder answers');
+
+        $report = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000']));
+        same(200, $report->status);
+        contains('  [ OK ] ' . Config::nativePath($private) . Config::nativePath('/.env') . " is valid\n         found through ", $report->body, 'report');
+        ok(preg_match('~^         found through .*[\\\\/]aatosms[\\\\/]env-path\.txt$~m', $report->body) === 1, "the report names env-path.txt:\n" . $report->body);
+        contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
+        contains("\nResult: no problems found.\n", $report->body, 'report');
+
+        // And a call starts with the settings of that file: the key, the API, the digit style.
+        $before = count($api());
+        $menu = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY] + PBX + ['Digits' => '']));
+        same(200, $menu->status);
+        contains('the number you are calling from, 8, 4, 5, 2, 6, 3, 2, 5, 6, 1, press 1.', spoken($menu));
+        same($before + 1, count($api()), 'the auto attendant was read from the API');
+        same(403, http('GET', $moved . '?' . http_build_query(['key' => 'not-the-key'] + PBX))->status, 'the key of that file is needed');
+
+        // The file is read for every request: when it names another place, the next request fails.
+        file_put_contents($project . '/' . Config::ENV_POINTER, Config::nativePath($folder . '/moved/nowhere') . "\r\n");
+        $broken = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY] + PBX));
+        ok(hangsUp($broken), 'without settings the call is ended');
+        lacks('press 1', $broken->body, 'answer without settings');
+        $bootLog = implode('', array_map('file_get_contents', glob($project . '/var/logs/*.log') ?: []));
+        contains(' names ' . Config::nativePath($folder . '/moved/nowhere') . ', which does not exist or cannot be read by this PHP.', $bootLog, 'log of the project folder');
+    });
+}
 
 // ---------------------------------------------------------------------------
 // HTTPS: the certificate of the API server is verified

@@ -63,6 +63,50 @@ jobs:
           printf 'NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n' > .env
           php bin/check.php
           rm .env
+      # The settings file outside of the project folder: env-path.txt in the project folder
+      # says where, written the way the operating system writes a path.
+      - name: Installation check with .env in another folder
+        run: |
+          settings='NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n'
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            folder="$(cygpath -u "$RUNNER_TEMP")/aatosms settings"
+            mkdir -p "$folder"
+            written="$(cygpath -w "$folder")"
+            separator='\'
+          else
+            folder="$RUNNER_TEMP/aatosms settings"
+            mkdir -p "$folder"
+            written="$folder"
+            separator='/'
+          fi
+          printf "$settings" > "$folder/.env"
+          cp env-path.example.txt env-path.txt
+          php bin/check.php > unchanged.txt 2>&1 && status=0 || status=$?
+          cat unchanged.txt
+          test "$status" = 1
+          grep -F "[FAIL] Configuration file not found" unchanged.txt
+          printf '%s\r\n' "$written" >> env-path.txt
+          tail -n 2 env-path.txt
+          php bin/check.php > elsewhere.txt 2>&1 && status=0 || status=$?
+          cat elsewhere.txt
+          test "$status" = 0
+          grep -F "[ OK ] ${written}${separator}.env is valid" elsewhere.txt
+          grep -F "found through " elsewhere.txt | grep -F "env-path.txt"
+          grep -F "Result: no problems found." elsewhere.txt
+          printf "$settings" > .env
+          php bin/check.php > leftover.txt 2>&1 && status=0 || status=$?
+          cat leftover.txt
+          test "$status" = 0
+          grep -F ".env also exists, but it is not used: env-path.txt names another place." leftover.txt
+          rm .env
+          printf '%s\r\n' "${written}${separator}missing" > env-path.txt
+          php bin/check.php > nowhere.txt 2>&1 && status=0 || status=$?
+          cat nowhere.txt
+          test "$status" = 1
+          grep -F "env-path.txt names ${written}${separator}missing, which does not exist or cannot be read by this PHP." nowhere.txt
+          rm env-path.txt
+          rm -r "$folder"
+          echo "::notice::.env in another folder: $(grep -F ' is valid' elsewhere.txt | sed 's/^ *//') - $(grep -F 'found through ' elsewhere.txt | sed 's/^ *//')"
       # A Windows PHP as it is installed by hand: no CA bundle in php.ini. The application
       # then verifies HTTPS certificates against the Windows certificate store.
       - name: Windows without a CA bundle - the test certificate is still refused

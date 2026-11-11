@@ -11,12 +11,12 @@
 # Files whose name starts with a dot (.env, .env.example, .gitignore ...) and the
 # project files that sit next to them.
 <IfModule mod_authz_core.c>
-    <FilesMatch "^(\..*|README\.md|web\.config)$">
+    <FilesMatch "^(\..*|README\.md|web\.config|env-path.*\.txt)$">
         Require all denied
     </FilesMatch>
 </IfModule>
 <IfModule !mod_authz_core.c>
-    <FilesMatch "^(\..*|README\.md|web\.config)$">
+    <FilesMatch "^(\..*|README\.md|web\.config|env-path.*\.txt)$">
         Order allow,deny
         Deny from all
     </FilesMatch>

@@ -353,6 +353,254 @@ test('config: loading from a folder', function (): void {
     }
 });
 
+/**
+ * A project folder with a .env (digit style "commas") and, outside of it, a folder with
+ * another .env ("hyphens") and a settings file with another name ("spaces").
+ *
+ * @return array{0:string, 1:string, 2:string, 3:callable(string):Config} the folder of the test, the project
+ *         folder, the other folder, and a function that writes env-path.txt and loads the settings
+ */
+function projectWithSettingsElsewhere(): array
+{
+    $base = temporaryFolder();
+    $project = $base . '/www/aatosms';
+    $private = $base . '/private/aatosms';
+    mkdir($project, 0700, true);
+    mkdir($private, 0700, true);
+    $settings = static function (string $style): string {
+        $lines = [];
+        foreach (REQUIRED as $name => $value) {
+            $lines[] = $name . '=' . $value;
+        }
+
+        return implode("\r\n", $lines) . "\r\nCALLER_ID_DIGIT_STYLE=" . $style . "\r\n";
+    };
+    file_put_contents($project . '/.env', $settings('commas'));
+    file_put_contents($private . '/.env', $settings('hyphens'));
+    file_put_contents($private . '/sms settings.txt', $settings('spaces'));
+    $load = static function (string $pointerText) use ($project): Config {
+        file_put_contents($project . '/' . Config::ENV_POINTER, $pointerText);
+
+        return Config::load($project);
+    };
+
+    return [$base, $project, $private, $load];
+}
+
+test('env-path.txt: without it, the .env of the project folder is read', function (): void {
+    [$base, $project] = projectWithSettingsElsewhere();
+    try {
+        same('env-path.txt', Config::ENV_POINTER);
+        same(['file' => $project . '/.env', 'pointer' => ''], Config::locate($project));
+        same(['file' => $project . '/.env', 'pointer' => ''], Config::locate($project . '/'), 'project folder written with a slash at the end');
+        $config = Config::load($project);
+        same(['commas', $project . '/.env', ''], [$config->digitStyle, $config->settingsFile, $config->pointerFile]);
+
+        $fromArray = Config::fromArray(REQUIRED, $project);
+        same(['', ''], [$fromArray->settingsFile, $fromArray->pointerFile], 'settings that were not read from a file');
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: names the folder that holds .env', function (): void {
+    [$base, $project, $private, $load] = projectWithSettingsElsewhere();
+    try {
+        $config = $load($private);
+        same('hyphens', $config->digitStyle, 'the .env of the other folder is read, not the one of the project folder');
+        same($private . '/.env', $config->settingsFile);
+        same($project . '/' . Config::ENV_POINTER, $config->pointerFile);
+        same(['file' => $private . '/.env', 'pointer' => $project . '/env-path.txt'], Config::locate($project));
+
+        // Everything else still belongs to the project folder.
+        same($project, $config->projectRoot);
+        same($project . '/var', $config->storagePath, 'a relative STORAGE_PATH starts at the project folder');
+
+        // The ways a path gets written into a text file on Windows.
+        $native = Config::nativePath($private); // with backslashes there
+        $spellings = [
+            'line end of Windows' => $native . "\r\n",
+            'no line end' => $native,
+            'slash at the end' => $native . DIRECTORY_SEPARATOR,
+            'Explorer, "Copy as path"' => '"' . $native . '"' . "\r\n",
+            'single quotes' => "'" . $native . "'\r\n",
+            'spaces around it' => "   " . $native . " \t\r\n",
+            'spaces inside the quotes' => '"  ' . $native . ' "' . "\r\n",
+            'indented comment and a line of spaces' => "   # where .env is kept\r\n \t \r\n" . $native . "\r\n",
+            'byte order mark, comments and blank lines' => "\xEF\xBB\xBF# AAtoSMS - where .env is kept\r\n\r\n#   D:\\example\r\n" . $native . "\r\n\r\n# end\r\n",
+            'old Mac line ends' => "# comment\r" . $native . "\r",
+        ];
+        foreach ($spellings as $what => $text) {
+            $config = $load($text);
+            same('hyphens', $config->digitStyle, $what);
+            same(rtrim($native, '/\\') . '/.env', $config->settingsFile, $what);
+        }
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: may name the settings file itself, whatever it is called', function (): void {
+    [$base, $project, $private, $load] = projectWithSettingsElsewhere();
+    try {
+        $file = Config::nativePath($private . '/sms settings.txt');
+        foreach ([$file, '"' . $file . '"' . "\r\n", "# the file\n" . $file . "\n"] as $text) {
+            $config = $load($text);
+            same('spaces', $config->digitStyle);
+            same([$file, $project . '/env-path.txt'], [$config->settingsFile, $config->pointerFile]);
+        }
+        same('hyphens', $load($private . '/.env')->digitStyle, 'the .env file, named in full');
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: a relative path starts at the project folder, wherever PHP was started', function (): void {
+    [$base, $project, , $load] = projectWithSettingsElsewhere();
+    $startedIn = getcwd();
+    try {
+        chdir(sys_get_temp_dir());
+        foreach (['../../private/aatosms', Config::nativePath('../../private/aatosms/'), Config::nativePath('../../private/aatosms/.env')] as $relative) {
+            $config = $load($relative . "\r\n");
+            same('hyphens', $config->digitStyle, $relative);
+            ok(str_starts_with($config->settingsFile, $project . '/..'), 'starts at the project folder: ' . $config->settingsFile);
+        }
+        same($project . '/../../private/aatosms/.env', $load('../../private/aatosms')->settingsFile);
+
+        // The project folder itself: allowed, and the same as no env-path.txt.
+        same('commas', $load('.')->digitStyle);
+        same('commas', $load('.env')->digitStyle);
+    } finally {
+        chdir((string) $startedIn);
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: without a path it changes nothing', function (): void {
+    [$base, $project, , $load] = projectWithSettingsElsewhere();
+    try {
+        foreach (['', "\r\n\r\n", "# only comments\r\n#D:\\private\\aatosms\r\n", "\xEF\xBB\xBF", '""', "   \t  "] as $text) {
+            $config = $load($text);
+            same(['commas', $project . '/.env', ''], [$config->digitStyle, $config->settingsFile, $config->pointerFile], var_export($text, true));
+        }
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: a place without a settings file is an error that names both, and the old .env is not used instead', function (): void {
+    [$base, $project, $private, $load] = projectWithSettingsElsewhere();
+    try {
+        $pointer = Config::nativePath($project . '/env-path.txt');
+
+        $nowhere = Config::nativePath($base . '/privat/aatosms');
+        $error = throws(ConfigException::class, static fn () => $load($nowhere . "\r\n"));
+        same(
+            $pointer . ' names ' . $nowhere . ', which does not exist or cannot be read by this PHP. Write the folder that holds .env, or the file itself; the account that runs PHP needs read permission there.',
+            $error->getMessage()
+        );
+
+        mkdir($base . '/empty');
+        $empty = Config::nativePath($base . '/empty');
+        $error = throws(ConfigException::class, static fn () => $load('"' . $empty . '"'));
+        same($pointer . ' names the folder ' . $empty . ', but there is no .env file in it, or this PHP cannot read it.', $error->getMessage());
+
+        // A setting instead of a path: the message shows what was understood.
+        throws(ConfigException::class, static fn () => $load('ENV_PATH=' . $private), ' names ' . Config::nativePath($project . '/ENV_PATH='));
+
+        // The root of the disk is not a place for .env.
+        throws(ConfigException::class, static fn () => $load('/'), $pointer . ' names ' . Config::nativePath('/') . ', which does not exist');
+
+        $error = throws(ConfigException::class, static fn () => $load($private . "\r\n# comment\r\n" . $project . "\r\n"));
+        same($pointer . ' has to contain one path, on a line of its own. It contains 2 lines that are not comments.', $error->getMessage());
+
+        // Notepad, "Save as > Encoding > Unicode".
+        $utf16 = "\xFF\xFE" . implode('', array_map(static fn (string $byte): string => $byte . "\x00", str_split($private . "\r\n")));
+        $error = throws(ConfigException::class, static fn () => $load($utf16));
+        same($pointer . ' is saved as UTF-16. Re-save it with UTF-8 encoding (Notepad: Save As > Encoding > UTF-8).', $error->getMessage());
+
+        throws(ConfigException::class, static fn () => Config::locate($project), 'UTF-16');
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: a missing .env is reported with a pointer to it', function (): void {
+    $folder = temporaryFolder();
+    try {
+        $error = throws(ConfigException::class, static fn () => Config::load($folder));
+        same(
+            'Configuration file not found: ' . Config::nativePath($folder . '/.env') . '. Copy .env.example to .env and fill it in.'
+                . ' If .env is kept in another folder, name that folder in env-path.txt (see env-path.example.txt).',
+            $error->getMessage()
+        );
+    } finally {
+        removeFolder($folder);
+    }
+});
+
+test('env-path.txt: the settings file that AATOSMS_ENV_FILE names for one process comes first', function (): void {
+    [$base, $project, $private, $load] = projectWithSettingsElsewhere();
+    try {
+        $load($private);
+        putenv('AATOSMS_ENV_FILE=' . $private . '/sms settings.txt');
+        same(['file' => $private . '/sms settings.txt', 'pointer' => ''], Config::locate($project));
+        same('spaces', Config::load($project)->digitStyle);
+        putenv('AATOSMS_ENV_FILE=  ');
+        same('hyphens', Config::load($project)->digitStyle, 'a blank variable is no variable');
+    } finally {
+        putenv('AATOSMS_ENV_FILE');
+        removeFolder($base);
+    }
+});
+
+test('env-path.example.txt: copied as it is it changes nothing; with a path at the end it works', function (): void {
+    [$base, $project, $private, $load] = projectWithSettingsElsewhere();
+    try {
+        $template = (string) file_get_contents(dirname(__DIR__) . '/env-path.example.txt');
+        foreach (preg_split('/\r\n|\n/', $template) ?: [] as $number => $line) {
+            ok($line === '' || $line[0] === '#', 'line ' . ($number + 1) . ' of the template is a comment: ' . $line);
+        }
+        contains('copy env-path.example.txt ' . Config::ENV_POINTER, $template, 'the template');
+
+        $config = $load($template);
+        same(['commas', ''], [$config->digitStyle, $config->pointerFile]);
+
+        $config = $load($template . Config::nativePath($private) . "\r\n");
+        same(['hyphens', $project . '/env-path.txt'], [$config->digitStyle, $config->pointerFile]);
+
+        // The file of a server never becomes one of the project files, so an update cannot replace it.
+        contains("\n/" . Config::ENV_POINTER . "\n", str_replace("\r\n", "\n", (string) file_get_contents(dirname(__DIR__) . '/.gitignore')), '.gitignore');
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('env-path.txt: the safety nets for a project folder that is served as a whole cover it', function (): void {
+    $root = dirname(__DIR__);
+    $private = ['.env', '.env.example', Config::ENV_POINTER, 'env-path.example.txt', Config::ENV_POINTER . '.txt', 'README.md', 'web.config'];
+
+    // Apache: the file names that the .htaccess of the project folder refuses, in every folder below it.
+    preg_match_all('/<FilesMatch "([^"]+)">/', (string) file_get_contents($root . '/.htaccess'), $rules);
+    same(2, count($rules[1]), 'FilesMatch rules, one for each generation of Apache');
+    same($rules[1][0], $rules[1][1], 'both rules name the same files');
+    foreach ($private as $name) {
+        ok(preg_match('~' . $rules[1][0] . '~', $name) === 1, '.htaccess refuses ' . $name);
+    }
+    foreach (['index.php', 'path.txt', 'my-env-path.txt', 'env-path.php'] as $name) {
+        ok(preg_match('~' . $rules[1][0] . '~', $name) === 0, '.htaccess does not refuse ' . $name);
+    }
+
+    // IIS: hidden segments are whole names, and each one is removed before it is added,
+    // so that a name the server hides already does not stop the web site (error 500.19).
+    $webConfig = (string) file_get_contents($root . '/web.config');
+    preg_match_all('/<add segment="([^"]+)" \/>/', $webConfig, $added);
+    preg_match_all('/<remove segment="([^"]+)" \/>/', $webConfig, $removed);
+    same($removed[1], $added[1], 'every hidden segment is removed first');
+    same([], array_values(array_diff($private, $added[1], ['web.config'])), 'private files that web.config does not hide (IIS hides web.config itself)');
+    ok(!in_array('public', $added[1], true) && !in_array('index.php', $added[1], true), 'the entry point is not hidden');
+});
+
 test('.env.example: valid once the three required values are filled in, and equal to the built-in defaults', function (): void {
     $example = str_replace("\r\n", "\n", (string) file_get_contents(dirname(__DIR__) . '/.env.example'));
     $values = Config::parseEnv($example);

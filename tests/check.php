@@ -203,8 +203,13 @@ test('check: reads the .env file of the project folder', function (): void {
         $missing = new Diagnostics($folder);
         $report = $missing->run(new Request());
         same(1, $missing->problems(), $report);
-        contains('  [FAIL] Configuration file not found: ' . Config::nativePath($folder . '/.env') . '. Copy .env.example to .env and fill it in.', $report);
+        contains(
+            '  [FAIL] Configuration file not found: ' . Config::nativePath($folder . '/.env') . '. Copy .env.example to .env and fill it in.'
+                . " If .env is kept in another folder, name that folder in env-path.txt (see env-path.example.txt).\n",
+            $report
+        );
         lacks('Storage', $report, 'report stops after the settings');
+        lacks('[WARN]', $report, 'report');
 
         file_put_contents($folder . '/.env', "NS_API_URL=https://pbx.example.test/ns-api/v2\r\nNS_API_TOKEN=" . Bench::TOKEN . "\r\nWEBRESPONDER_KEY=short\r\n");
         $invalid = new Diagnostics($folder);
@@ -216,13 +221,155 @@ test('check: reads the .env file of the project folder', function (): void {
         $valid = new Diagnostics($folder);
         $report = $valid->run(new Request());
         same(0, $valid->problems(), $report);
-        contains('  [ OK ] ' . Config::nativePath($folder . '/.env') . ' is valid', $report);
+        contains('  [ OK ] ' . Config::nativePath($folder . '/.env') . " is valid\n         API ................. https://pbx.example.test/ns-api/v2\n", $report);
+        lacks('found through', $report, 'report without env-path.txt');
         contains('  [ OK ] ' . Config::nativePath($folder . '/var') . ' can be written by this PHP', $report);
         contains('         Log ................. ' . Config::nativePath($folder . '/var/logs') . ' (info)', $report);
         lacks(Bench::TOKEN, $report, 'report');
         lacks(Bench::KEY, $report, 'report');
     } finally {
         removeFolder($folder);
+    }
+});
+
+/**
+ * A project folder without settings, and a folder next to it that holds the .env.
+ *
+ * @return array{0:string, 1:string, 2:string, 3:string, 4:callable():array{0:string, 1:int, 2:int}} the folder of
+ *         the test, the project folder, the other folder, the text of a valid .env, and a function that
+ *         runs the check of the command line: report, problems, warnings
+ */
+function projectForCheck(): array
+{
+    $base = temporaryFolder();
+    $project = $base . '/www/aatosms';
+    $private = $base . '/private/aatosms';
+    mkdir($project, 0700, true);
+    mkdir($private, 0700, true);
+    $env = "NS_API_URL=https://pbx.example.test/ns-api/v2\r\nNS_API_TOKEN=" . Bench::TOKEN . "\r\nWEBRESPONDER_KEY=" . Bench::KEY . "\r\n";
+    file_put_contents($private . '/.env', $env);
+    $run = static function () use ($project): array {
+        $check = new Diagnostics($project);
+        $report = $check->run(new Request());
+
+        return [$report, $check->problems(), preg_match_all('/^  \[WARN\] /m', $report)];
+    };
+
+    return [$base, $project, $private, $env, $run];
+}
+
+test('check: names the .env that env-path.txt leads to', function (): void {
+    [$base, $project, $private, , $run] = projectForCheck();
+    try {
+        file_put_contents($project . '/env-path.txt', "# where .env is kept\r\n\"" . Config::nativePath($private) . "\"\r\n");
+        [$report, $problems, $warnings] = $run();
+        same([0, 0], [$problems, $warnings], $report);
+        contains(
+            "Settings\n  [ OK ] " . Config::nativePath($private) . Config::nativePath('/.env') . " is valid\n"
+                . '         found through ' . Config::nativePath($project . '/env-path.txt') . "\n"
+                . "         API ................. https://pbx.example.test/ns-api/v2\n",
+            $report
+        );
+        // What is not in .env stays with the project folder.
+        contains('  [ OK ] ' . Config::nativePath($project . '/var') . ' can be written by this PHP', $report);
+        contains("\nResult: no problems found.\n", $report);
+        lacks(Bench::TOKEN, $report, 'report');
+        lacks(Bench::KEY, $report, 'report');
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('check: a .env that stayed in the project folder is pointed out', function (): void {
+    [$base, $project, $private, $env, $run] = projectForCheck();
+    try {
+        file_put_contents($project . '/env-path.txt', Config::nativePath($private) . "\r\n");
+        file_put_contents($project . '/.env', $env);
+        [$report, $problems, $warnings] = $run();
+        same([0, 1], [$problems, $warnings], $report);
+        contains(
+            '  [WARN] ' . Config::nativePath($project . '/.env') . " also exists, but it is not used: env-path.txt names another place.\n"
+                . "         Delete it, so that the API token is kept in one place only.\n",
+            $report
+        );
+        contains("\nResult: no problems, 1 warning(s).\n", $report);
+
+        // env-path.txt that names the project folder itself: that .env is the one in use.
+        foreach (['.', Config::nativePath($project), Config::nativePath($project . '/.env'), '../aatosms'] as $same) {
+            file_put_contents($project . '/env-path.txt', $same . "\r\n");
+            [$report, $problems, $warnings] = $run();
+            same([0, 0], [$problems, $warnings], $same . "\n" . $report);
+            contains('         found through ' . Config::nativePath($project . '/env-path.txt') . "\n", $report);
+        }
+
+        // Without env-path.txt there is nothing to point out either.
+        unlink($project . '/env-path.txt');
+        [$report, $problems, $warnings] = $run();
+        same([0, 0], [$problems, $warnings], $report);
+        contains('  [ OK ] ' . Config::nativePath($project . '/.env') . " is valid\n         API ", $report);
+
+        // The tests name the settings file through a variable; that is no reason for the hint.
+        putenv('AATOSMS_ENV_FILE=' . $private . '/.env');
+        [$report, $problems, $warnings] = $run();
+        same([0, 0], [$problems, $warnings], $report);
+        contains('  [ OK ] ' . Config::nativePath($private . '/.env') . " is valid\n         API ", $report);
+    } finally {
+        putenv('AATOSMS_ENV_FILE');
+        removeFolder($base);
+    }
+});
+
+test('check: an env-path.txt that leads nowhere is a problem, also when an old .env is still there', function (): void {
+    [$base, $project, $private, $env, $run] = projectForCheck();
+    try {
+        file_put_contents($project . '/.env', $env);
+        $pointer = Config::nativePath($project . '/env-path.txt');
+
+        file_put_contents($project . '/env-path.txt', Config::nativePath($base . '/privat/aatosms') . "\r\n");
+        [$report, $problems] = $run();
+        same(1, $problems, $report);
+        contains('  [FAIL] ' . $pointer . ' names ' . Config::nativePath($base . '/privat/aatosms') . ', which does not exist or cannot be read by this PHP.', $report);
+        lacks(' is valid', $report, 'report');
+        lacks('Storage', $report, 'report stops after the settings');
+
+        unlink($private . '/.env');
+        file_put_contents($project . '/env-path.txt', Config::nativePath($private) . "\r\n");
+        [$report, $problems] = $run();
+        same(1, $problems, $report);
+        contains('  [FAIL] ' . $pointer . ' names the folder ' . Config::nativePath($private) . ', but there is no .env file in it', $report);
+    } finally {
+        removeFolder($base);
+    }
+});
+
+test('check: env-path.txt.txt, as Windows Explorer makes it, is pointed out', function (): void {
+    [$base, $project, $private, $env, $run] = projectForCheck();
+    try {
+        $warning = '  [WARN] ' . Config::nativePath($project . '/env-path.txt.txt') . " is not read: the name has to be env-path.txt.\n"
+            . "         Windows Explorer hides the last \".txt\". Rename the file:  ren env-path.txt.txt env-path.txt\n";
+        file_put_contents($project . '/env-path.txt.txt', Config::nativePath($private) . "\r\n");
+
+        // The .env was moved already: nothing is found.
+        [$report, $problems, $warnings] = $run();
+        same([1, 1], [$problems, $warnings], $report);
+        contains('  [FAIL] Configuration file not found: ' . Config::nativePath($project . '/.env') . '.', $report);
+        contains($warning, $report);
+
+        // The old .env is still there: it is the one in use, which is not what was meant.
+        file_put_contents($project . '/.env', $env);
+        [$report, $problems, $warnings] = $run();
+        same([0, 1], [$problems, $warnings], $report);
+        contains('  [ OK ] ' . Config::nativePath($project . '/.env') . " is valid\n", $report);
+        contains($warning, $report);
+
+        // With the right name next to it, the other file is just a file.
+        file_put_contents($project . '/env-path.txt', Config::nativePath($private) . "\r\n");
+        unlink($project . '/.env');
+        [$report, $problems, $warnings] = $run();
+        same([0, 0], [$problems, $warnings], $report);
+        lacks('env-path.txt.txt', $report, 'report');
+    } finally {
+        removeFolder($base);
     }
 });
 
@@ -253,6 +400,12 @@ test('check in the browser: warns when the address shows that the whole project 
     $report = $exposed->call(['check' => '1'])->body;
     contains('  [WARN] This page was reached as /aatosms/public/index.php.', $report);
     contains('Test it: open /aatosms/.env.example in this browser. An error page is the right answer.', $report);
+    contains(
+        "         If the file is shown, make the web server serve only the \"public\" folder (README, \"Web server\").\n"
+            . "         If that cannot be done, keep .env and the \"var\" folder somewhere else: see env-path.example.txt\n"
+            . "         and STORAGE_PATH in .env.\n",
+        $report
+    );
     contains("\nResult: no problems, 1 warning(s).\n", $report);
 
     $atRoot = new Bench([], '/public/index.php');

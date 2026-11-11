@@ -129,6 +129,8 @@ final class Diagnostics
         $this->note('project folder is probably reachable from the web, private files included.');
         $this->note(sprintf('Test it: open %s/.env.example in this browser. An error page is the right answer.', $match[1]));
         $this->note('If the file is shown, make the web server serve only the "public" folder (README, "Web server").');
+        $this->note('If that cannot be done, keep .env and the "var" folder somewhere else: see env-path.example.txt');
+        $this->note('and STORAGE_PATH in .env.');
     }
 
     private function checkSettings(): bool
@@ -139,17 +141,20 @@ final class Diagnostics
                 $this->config = Config::load($this->projectRoot);
             } catch (ConfigException $error) {
                 $this->fail($error->getMessage());
+                $this->checkPointerName();
 
                 return false;
             }
-            $this->ok(Config::nativePath(Config::envFile($this->projectRoot)) . ' is valid');
-        } else {
-            $this->ok('settings are valid');
         }
 
         $config = $this->config;
-        if ($config->unknownKeys !== []) {
-            $this->warn('Names in .env that this application does not know (misspelled?): ' . implode(', ', $config->unknownKeys));
+        if ($config->settingsFile !== '') {
+            $this->ok(Config::nativePath($config->settingsFile) . ' is valid');
+            if ($config->pointerFile !== '') {
+                $this->note('found through ' . Config::nativePath($config->pointerFile));
+            }
+        } else {
+            $this->ok('settings are valid');
         }
         $this->note('API ................. ' . $config->apiUrl);
         $this->note('Text comes from ..... auto attendant key ' . $config->smsOption);
@@ -162,6 +167,12 @@ final class Diagnostics
         $this->note('Callback URLs ....... ' . ($config->appUrl !== '' ? $callback : 'same host and path as the To-Web URL'));
         $this->note('Log ................. ' . Config::nativePath($config->storagePath . '/logs') . ' (' . $config->logLevel . ')');
 
+        if ($config->unknownKeys !== []) {
+            $this->warn('Names in .env that this application does not know (misspelled?): ' . implode(', ', $config->unknownKeys));
+        }
+        $this->checkUnusedSettingsFile($config);
+        $this->checkPointerName();
+
         // The keys a caller presses are sent to APP_URL. Seen from the web server, a wrong path can be spotted.
         $callbackPath = (string) parse_url($callback, PHP_URL_PATH);
         if ($config->appUrl !== '' && $this->webPath !== '' && strcasecmp($callbackPath, $this->webPath) !== 0) {
@@ -171,6 +182,36 @@ final class Diagnostics
         }
 
         return true;
+    }
+
+    /**
+     * Explorer hides the ending of known file types, so a file that is named "env-path.txt"
+     * there is in fact env-path.txt.txt - which the application does not read.
+     */
+    private function checkPointerName(): void
+    {
+        $name = Config::ENV_POINTER;
+        $folder = rtrim($this->projectRoot, '/\\') . '/';
+        if (is_file($folder . $name) || !is_file($folder . $name . '.txt')) {
+            return;
+        }
+        $this->warn(sprintf('%s is not read: the name has to be %s.', Config::nativePath($folder . $name . '.txt'), $name));
+        $this->note(sprintf('Windows Explorer hides the last ".txt". Rename the file:  ren %s.txt %s', $name, $name));
+    }
+
+    /** A .env that stayed in the project folder after env-path.txt was pointed somewhere else. */
+    private function checkUnusedSettingsFile(Config $config): void
+    {
+        $local = rtrim($this->projectRoot, '/\\') . '/.env';
+        if ($config->pointerFile === '' || !is_file($local)) {
+            return;
+        }
+        $used = realpath($config->settingsFile);
+        if ($used !== false && $used === realpath($local)) {
+            return;
+        }
+        $this->warn(sprintf('%s also exists, but it is not used: %s names another place.', Config::nativePath($local), Config::ENV_POINTER));
+        $this->note('Delete it, so that the API token is kept in one place only.');
     }
 
     private function checkStorage(): void
