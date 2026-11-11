@@ -1,0 +1,57 @@
+name: Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  php:
+    name: PHP ${{ matrix.php }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        php: ['8.2', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, dom, openssl
+          coverage: none
+      - name: PHP syntax
+        run: |
+          failed=0
+          while IFS= read -r file; do
+            php -l "$file" > /dev/null || failed=1
+          done < <(find src public tests bin -name '*.php')
+          exit $failed
+      - name: Tests
+        run: php tests/run.php
+      - name: Whole calls over HTTP, with real web server processes
+        run: php tests/http.php
+      - name: Installation check
+        run: |
+          if php bin/check.php > check.txt 2>&1; then
+            cat check.txt
+            echo "bin/check.php must fail when there is no .env file"
+            exit 1
+          fi
+          grep -F "[FAIL] Configuration file not found" check.txt
+          printf 'NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n' > .env
+          php bin/check.php
+          rm .env
+      # A Windows PHP as it is installed by hand: no CA bundle in php.ini. The application
+      # then verifies HTTPS certificates against the Windows certificate store.
+      - name: Windows without a CA bundle - the test certificate is still refused
+        if: runner.os == 'Windows'
+        run: php -d curl.cainfo= -d openssl.cafile= tests/http.php
+      - name: Windows without a CA bundle - a public HTTPS server is accepted
+        if: runner.os == 'Windows'
+        run: |
+          php -d curl.cainfo= -d openssl.cafile= -r 'require "src/bootstrap.php"; $answer = AAtoSMS\NetSapiens::curlTransport("GET", "https://api.github.com/zen", [], null, ["timeout" => 20, "connect_timeout" => 10, "ca_file" => ""]); echo "HTTP ", $answer["status"], " ", $answer["error"], PHP_EOL; exit($answer["error"] === "" ? 0 : 1);'
