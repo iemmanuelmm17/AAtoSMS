@@ -116,6 +116,57 @@ function startServer(array $arguments, string $logFile, array $environment)
     return $process;
 }
 
+/**
+ * Starts "php -S 127.0.0.1:<free port> ..." and waits until it answers.
+ *
+ * A port that was free a moment ago can be taken by the time the server asks for it, and a
+ * busy computer can be slow to start a program. So a start that fails is repeated on another
+ * port before the tests give up.
+ *
+ * @param list<string>          $arguments   what follows the address: "-t <folder>", or a router script
+ * @param array<string, string> $environment added to the environment of this process
+ * @param string                $path        address that shows that the server works
+ * @return array{0:resource, 1:int} the process and its port
+ */
+function serve(array $arguments, string $logFile, array $environment, string $path): array
+{
+    for ($attempt = 1; $attempt <= 3; $attempt++) {
+        [$port] = freePorts(1);
+        $process = startServer(array_merge(['-S', '127.0.0.1:' . $port], $arguments), $logFile, $environment);
+        $deadline = microtime(true) + 20;
+        do {
+            usleep(50000);
+            $running = proc_get_status($process)['running'];
+            if (!$running) {
+                break; // it ends at once when it does not get the port
+            }
+            // Asked briefly and often: Windows takes two seconds to say that nothing listens yet.
+            $socket = @stream_socket_client('tcp://127.0.0.1:' . $port, $errorCode, $errorText, 0.2);
+            if ($socket === false) {
+                continue;
+            }
+            fclose($socket);
+            if (answers('http://127.0.0.1:' . $port . $path, 0) && proc_get_status($process)['running']) {
+                return [$process, $port];
+            }
+        } while (microtime(true) < $deadline);
+        stopServer($process);
+        @file_put_contents($logFile, sprintf("(start %d: no answer on port %d, the program %s)\n", $attempt, $port, $running ? 'was still running' : 'had ended'), FILE_APPEND);
+    }
+
+    throw new \RuntimeException(sprintf("php -S 127.0.0.1:<port> %s did not start.\n%s", implode(' ', $arguments), (string) @file_get_contents($logFile)));
+}
+
+/** Ends the tests before the first one: without servers there is nothing to test. */
+function giveUp(string $message): never
+{
+    fwrite(STDERR, $message . "\n");
+    if (getenv('GITHUB_ACTIONS') === 'true') {
+        echo '::error::', str_replace(['%', "\r", "\n"], ['%25', '%0D', '%0A'], $message), "\n";
+    }
+    exit(1);
+}
+
 /** @param resource $process */
 function stopServer($process): void
 {
@@ -258,23 +309,32 @@ if ($ownServers) {
         exit(2);
     }
     $folder = temporaryFolder();
-    [$apiPort, $appPort, $secondPort] = freePorts(3);
-    file_put_contents($folder . '/.env', settings($folder, $apiPort));
-    $servers['api'] = startServer(
-        ['-S', '127.0.0.1:' . $apiPort, __DIR__ . '/fixtures/mock-api.php'],
-        $folder . '/api-server.log',
-        ['AATOSMS_MOCK_LOG' => $folder . '/api.jsonl']
-    );
-    foreach (['app' => $appPort, 'app2' => $secondPort] as $name => $port) {
-        $servers[$name] = startServer(
-            ['-S', '127.0.0.1:' . $port, '-t', dirname(__DIR__) . '/public'],
-            $folder . '/' . $name . '-server.log',
-            ['AATOSMS_ENV_FILE' => $folder . '/.env']
+    try {
+        [$servers['api'], $apiPort] = serve(
+            [__DIR__ . '/fixtures/mock-api.php'],
+            $folder . '/api-server.log',
+            ['AATOSMS_MOCK_LOG' => $folder . '/api.jsonl'],
+            '/'
         );
+        file_put_contents($folder . '/.env', settings($folder, $apiPort));
+        $ports = [];
+        foreach (['app', 'app2'] as $name) {
+            [$servers[$name], $ports[$name]] = serve(
+                ['-t', dirname(__DIR__) . '/public'],
+                $folder . '/' . $name . '-server.log',
+                ['AATOSMS_ENV_FILE' => $folder . '/.env'],
+                '/index.php'
+            );
+        }
+    } catch (\RuntimeException $error) {
+        array_map(stopServer(...), $servers);
+        usleep(200000); // Windows: let the servers release their log files
+        removeFolder($folder);
+        giveUp('The test servers did not start. ' . $error->getMessage());
     }
-    $app = 'http://127.0.0.1:' . $appPort;
-    $second = 'http://127.0.0.1:' . $secondPort;
-    $apiUp = answers('http://127.0.0.1:' . $apiPort . '/');
+    $app = 'http://127.0.0.1:' . $ports['app'];
+    $second = 'http://127.0.0.1:' . $ports['app2'];
+    file_put_contents($folder . '/api.jsonl', ''); // forget the request that waited for the stand-in API
 } else {
     $folder = rtrim($options['dir'] ?? '', '/\\');
     if (!is_file($folder . '/.env')) {
@@ -283,7 +343,9 @@ if ($ownServers) {
     }
     $app = rtrim($options['app'], '/');
     $second = rtrim($options['app2'] ?? $options['app'], '/');
-    $apiUp = true;
+    if (!answers($app . '/index.php') || !answers($second . '/index.php')) {
+        giveUp('The application does not answer at ' . $app . '/index.php and ' . $second . '/index.php');
+    }
 }
 
 $stop = static function () use (&$servers, $ownServers, $folder): void {
@@ -299,18 +361,6 @@ $stop = static function () use (&$servers, $ownServers, $folder): void {
     $servers = [];
 };
 register_shutdown_function($stop); // also when this script itself fails
-
-if (!$apiUp || !answers($app . '/index.php') || !answers($second . '/index.php')) {
-    $output = '';
-    foreach (glob($folder . '/*-server.log') ?: [] as $file) {
-        $output .= basename($file) . ":\n" . file_get_contents($file) . "\n";
-    }
-    fwrite(STDERR, "The test servers did not start.\n" . $output);
-    exit(1);
-}
-if ($ownServers) {
-    file_put_contents($folder . '/api.jsonl', ''); // forget the request that waited for the stand-in API
-}
 
 $started = microtime(true);
 $entry = $app . '/index.php';
@@ -599,14 +649,9 @@ if ($ownServers) {
         file_put_contents($private . '/.env', settings($folder, $apiPort));
         file_put_contents($project . '/' . Config::ENV_POINTER, "# written by tests/http.php\r\n\"" . Config::nativePath($private) . "\"\r\n");
 
-        [$port] = freePorts(1);
-        $servers['moved'] = startServer(
-            ['-S', '127.0.0.1:' . $port, '-t', $project . '/public'],
-            $folder . '/moved-server.log',
-            ['AATOSMS_ENV_FILE' => '']
-        );
+        // An empty value takes AATOSMS_ENV_FILE out of the environment of that server.
+        [$servers['moved'], $port] = serve(['-t', $project . '/public'], $folder . '/moved-server.log', ['AATOSMS_ENV_FILE' => ''], '/index.php');
         $moved = 'http://127.0.0.1:' . $port . '/index.php';
-        ok(answers($moved), 'the web server of the second project folder answers');
 
         $report = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000']));
         same(200, $report->status);
@@ -694,7 +739,7 @@ $serverOutput = '';
 if (Results::$failures !== [] && $ownServers) {
     // What the servers printed (PHP messages, requests) helps to explain a failure.
     foreach (glob($folder . '/*-server.log') ?: [] as $file) {
-        $lines = preg_grep('/ (Accepted|Closing)\s*\z/', file($file, FILE_IGNORE_NEW_LINES) ?: [], PREG_GREP_INVERT);
+        $lines = preg_grep('/ (Accepted|Closing|Closed without sending a request; .*)\s*\z/', file($file, FILE_IGNORE_NEW_LINES) ?: [], PREG_GREP_INVERT);
         $serverOutput .= basename($file) . ":\n  " . implode("\n  ", $lines ?: []) . "\n\n";
     }
 }
