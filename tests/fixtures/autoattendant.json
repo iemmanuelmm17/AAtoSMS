@@ -1,0 +1,126 @@
+{
+    "attendant-name": "Example AA",
+    "user": "9000",
+    "starting-prompt": "Prompt_900001",
+    "time-frame": "*",
+    "intro-greetings": [
+        {"time-frame": null, "audio": []},
+        {"time-frame": null, "audio": []}
+    ],
+    "audio": {
+        "filename": "greeting.wav",
+        "ordinal-order": 1,
+        "file-duration-seconds": 9,
+        "file-size-kilobytes": 151,
+        "created-datetime": "2026-10-01 14:02:11",
+        "file-access-url": "https://pbx.example.test/ns-api/v2/media/greeting.wav",
+        "file-script-text": "Thank you for calling Example Dental.",
+        "file-source": "tts",
+        "text-to-speech-voice-id": "en-US_AllisonVoice",
+        "text-to-speech-language": "en-US"
+    },
+    "auto-attendant": {
+        "3-digit-dial-by-extension": "no",
+        "4-digit-dial-by-extension": "yes",
+        "5-digit-dial-by-extension": "no",
+        "no-key-press": "repeat",
+        "unassigned-key-press": "repeat",
+        "option-1": {
+            "description": "AA designer: press 1 for callqueue 8560 (Front Desk)",
+            "destination-application": "to-callqueue",
+            "destination-user": "8560"
+        },
+        "option-2": {
+            "description": "AA designer: press 2 for message Play Message",
+            "audio": {
+                "filename": "message2.wav",
+                "ordinal-order": 1,
+                "file-duration-seconds": 14,
+                "file-size-kilobytes": 230,
+                "created-datetime": "2026-10-01 14:05:40",
+                "file-access-url": "https://pbx.example.test/ns-api/v2/media/message2.wav",
+                "file-script-text": "Thank you for calling Example Dental. Our office is at 100 Main Street. Reply to this message to book an appointment.",
+                "file-source": "tts",
+                "text-to-speech-voice-id": "en-US_AllisonVoice",
+                "text-to-speech-language": "en-US"
+            },
+            "destination-application": "play-message"
+        },
+        "option-3": {
+            "description": "AA designer: press 3 for message Play Message",
+            "audio": [],
+            "destination-application": "play-message"
+        },
+        "option-4": {
+            "description": "AA designer: press 4 for user 6001 (Reception)",
+            "destination-application": "to-user",
+            "destination-user": "6001",
+            "caller-name-translation": "[*]"
+        },
+        "option-5": {
+            "description": "AA designer: press 5 for message Play Message",
+            "audio": {
+                "filename": "upload5.wav",
+                "ordinal-order": 1,
+                "file-duration-seconds": 6,
+                "file-size-kilobytes": 98,
+                "created-datetime": "2026-10-02 09:15:00",
+                "file-access-url": "https://pbx.example.test/ns-api/v2/media/upload5.wav",
+                "file-script-text": "uploaded message",
+                "file-source": "upload",
+                "text-to-speech-voice-id": "",
+                "text-to-speech-language": ""
+            },
+            "destination-application": "play-message"
+        },
+        "option-6": {
+            "description": "AA designer: press 6 for tier More options",
+            "auto-attendant": {
+                "option-1": {
+                    "description": "AA designer: press 1 for user 6002 (Billing)",
+                    "destination-application": "to-user",
+                    "destination-user": "6002"
+                }
+            },
+            "audio": {
+                "filename": "tier6.wav",
+                "ordinal-order": 1,
+                "file-script-text": "For billing, press 1.",
+                "file-source": "tts"
+            }
+        },
+        "option-7": {
+            "description": "AA designer: press 7 for message Play Message",
+            "audio": {
+                "filename": "empty7.wav",
+                "ordinal-order": 1,
+                "file-script-text": "   ",
+                "file-source": "upload"
+            },
+            "destination-application": "play-message"
+        },
+        "option-9": {
+            "description": "AA designer: press 9 for message Play Message",
+            "audio": [
+                {"filename": "b.wav", "ordinal-order": 2, "file-script-text": "Second part.", "file-source": "tts"},
+                {"filename": "a.wav", "ordinal-order": 1, "file-script-text": "First part.", "file-source": "tts"}
+            ],
+            "destination-application": "play-message"
+        },
+        "option-0": {
+            "description": "AA designer: press 0 for user 7777 (web responder)",
+            "destination-application": "to-user",
+            "destination-user": "7777"
+        },
+        "option-*": {
+            "description": "AA designer: press * for message Play Message",
+            "audio": {
+                "filename": "star.wav",
+                "ordinal-order": 1,
+                "file-script-text": "Star \"quoted\" & <tagged> text.\nLine two with caf\u00e9.",
+                "file-source": "tts"
+            },
+            "destination-application": "play-message"
+        }
+    }
+}
