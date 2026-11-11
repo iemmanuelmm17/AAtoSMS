@@ -142,6 +142,13 @@ Alias /aatosms "D:/www/aatosms/public"
 
 Either way the address becomes `https://your-server/aatosms/index.php`.
 
+If `D:\www` is itself the root of the web site, the project can already be reached as
+`https://your-server/aatosms/public/index.php`. That works, but the whole project folder
+is then inside the web site and the private files are protected only by the safety nets
+described under [Security](#security). Adding the virtual directory or alias above is
+still the better setup: it takes precedence over the folder of the same name, so only
+`public` remains reachable.
+
 The Windows account that runs PHP for the web site needs **Modify** permission on the
 `var` folder and read permission on the rest. On IIS that account is usually `IUSR`
 (otherwise the identity of the application pool):
@@ -250,6 +257,7 @@ The API token, the key and the call ids are never written to the log.
 | What happens | Look for | Usual cause |
 | --- | --- | --- |
 | The call drops as soon as the key is pressed, nothing in the log | Web server access log; step 5 above | The core cannot reach the address, or PHP cannot write to `var` (then the lines are in the PHP error log) |
+| Every address of the application gives HTTP 500 (IIS: 500.19) | The error page or the Apache error log names `web.config` or `.htaccess` | The web server does not accept a safety-net file of this project (see [Security](#security)). Delete it: `web.config` on IIS, the `.htaccess` files on Apache. They are not needed when only `public` is served |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
 | The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = key 2 has no text; "SMSNumber ... not a valid 10-digit number" |
 | The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back. `APP_URL` blank: set it. `APP_URL` set: it is wrong (step 5 warns when its path does not fit) |
