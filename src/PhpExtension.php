@@ -146,6 +146,9 @@ final class PhpExtension
             $lines[] = sprintf('The program and its "ext" folder are both in %s, so two PHP downloads are mixed there.', $home);
             $lines[] = 'Unpack one complete PHP download into that folder again (and keep php.ini). The Apache module';
             $lines[] = 'of PHP needs the "Thread Safe" download; IIS and FastCGI use the "Non Thread Safe" one.';
+            if ($php['windows']) {
+                $lines[] = 'Stop the web server and every running PHP first: Windows does not replace files that are in use.';
+            }
 
             return $lines;
         }

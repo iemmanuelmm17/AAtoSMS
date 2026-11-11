@@ -389,6 +389,7 @@ test('missing extension: a file made for another PHP', function (): void {
             'The program and its "ext" folder are both in ' . $web . ', so two PHP downloads are mixed there.',
             'Unpack one complete PHP download into that folder again (and keep php.ini). The Apache module',
             'of PHP needs the "Thread Safe" download; IIS and FastCGI use the "Non Thread Safe" one.',
+            'Stop the web server and every running PHP first: Windows does not replace files that are in use.',
         ], $why(['binary' => $root . '/web/php.exe']));
         same($why(['binary' => $root . '/web/php.exe']), $why(['binary' => $root . '/web/php.exe', 'extension_dir' => 'ext']), 'a relative extension_dir starts at the program');
         same($why(['binary' => $root . '/web/php.exe']), $why(['binary' => strtoupper($root . '/web') . '\\PHP.EXE']), 'Windows: capitals and the kind of slash do not matter');
@@ -425,7 +426,9 @@ test('missing extension: a file made for another PHP', function (): void {
         same('  ' . Config::nativePath($root . '/usr/lib') . DIRECTORY_SEPARATOR . 'curl.so ... API20240924,NTS', $linux[1]);
         same('  "' . Config::nativePath($root . '/usr') . DIRECTORY_SEPARATOR . 'php" bin' . DIRECTORY_SEPARATOR . 'check.php', $linux[5]);
         same(6, count($linux));
-        contains('are both in ' . Config::nativePath($root . '/usr') . ', so two PHP downloads are mixed there.', $why(['binary' => $root . '/usr/php'] + $facts)[4]);
+        $mixed = $why(['binary' => $root . '/usr/php'] + $facts);
+        contains('are both in ' . Config::nativePath($root . '/usr') . ', so two PHP downloads are mixed there.', $mixed[4]);
+        same(7, count($mixed), 'the advice about files in use is for Windows');
         same($linux, $why(['binary' => strtoupper($root . '/usr') . '/php'] + $facts), 'there, capitals make another folder');
     } finally {
         removeFolder($root);
