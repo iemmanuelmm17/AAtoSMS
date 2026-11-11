@@ -1,0 +1,7 @@
+# Server-only settings (API token, responder key)
+/.env
+
+# Runtime data: logs, call state, send records
+/var/*
+!/var/.gitkeep
+!/var/.htaccess
