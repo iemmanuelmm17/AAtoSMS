@@ -26,8 +26,8 @@ final class Diagnostics
 
     private int $warnings = 0;
 
-    /** File name of the web entry script, for the callback address shown in the report. */
-    private string $script = 'index.php';
+    /** Address of the web entry script on this server (/aatosms/index.php); '' on the command line. */
+    private string $webPath = '';
 
     /**
      * @param Config|null     $config already loaded settings; null = read the .env file
@@ -57,9 +57,9 @@ final class Diagnostics
         $this->warnings = 0;
 
         $this->checkPhp();
-        if ($request->path !== '') {
-            $this->script = basename($request->path);
-            $this->checkWebAddress($request->path);
+        $this->webPath = $request->path;
+        if ($this->webPath !== '') {
+            $this->checkWebAddress($this->webPath);
         }
         if ($this->checkSettings()) {
             $this->checkStorage();
@@ -138,8 +138,17 @@ final class Diagnostics
         $this->note('Limit ............... ' . ($config->limitPerDestination === 0
             ? 'none'
             : sprintf('%d text(s) per destination per %d minutes', $config->limitPerDestination, $config->limitWindowMinutes)));
-        $this->note('Callback URLs ....... ' . ($config->appUrl !== '' ? $config->appUrl . '/' . $this->script : 'same host and path as the To-Web URL'));
+        $callback = $config->appUrl . '/' . basename($this->webPath !== '' ? $this->webPath : '/index.php');
+        $this->note('Callback URLs ....... ' . ($config->appUrl !== '' ? $callback : 'same host and path as the To-Web URL'));
         $this->note('Log ................. ' . $config->storagePath . '/logs (' . $config->logLevel . ')');
+
+        // The keys a caller presses are sent to APP_URL. Seen from the web server, a wrong path can be spotted.
+        $callbackPath = (string) parse_url($callback, PHP_URL_PATH);
+        if ($config->appUrl !== '' && $this->webPath !== '' && strcasecmp($callbackPath, $this->webPath) !== 0) {
+            $this->warn(sprintf('APP_URL makes the PBX send the keys of the caller to %s, but this page was reached as %s.', $callbackPath, $this->webPath));
+            $this->note('Unless a proxy in front of this server translates the address, the keys will be lost:');
+            $this->note('correct APP_URL in .env, or leave it blank.');
+        }
 
         return true;
     }

@@ -252,7 +252,7 @@ The API token, the key and the call ids are never written to the log.
 | The call drops as soon as the key is pressed, nothing in the log | Web server access log; step 5 above | The core cannot reach the address, or PHP cannot write to `var` (then the lines are in the PHP error log) |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
 | The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = key 2 has no text; "SMSNumber ... not a valid 10-digit number" |
-| The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back: set `APP_URL` |
+| The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back. `APP_URL` blank: set it. `APP_URL` set: it is wrong (step 5 warns when its path does not fit) |
 | The caller hears the apology after pressing 1 | `Text not sent: ...` with the answer of the API | The number is not an SMS number of that user: set `SMSUser`/`SMS_USER`, or try another `SMS_NUMBER_FORMAT` |
 | "Your text message has been sent" but nothing arrives | `Text sent` with `http_status` 2xx | The API accepted the text; check the SMS number and carrier side in NetSapiens |
 | "A text message was already sent to this number recently" | `limit for this destination reached` | `SMS_LIMIT_PER_DESTINATION`: that number already got its texts for this hour |

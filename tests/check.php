@@ -226,12 +226,38 @@ test('check in the browser: warns when the address shows that the whole project 
     }
 
     // With APP_URL the callbacks are absolute, but the check still looks at the real address.
-    $absolute = new Bench(['APP_URL' => 'https://sms.example.test/sms'], '/aatosms/public/index.php');
+    $absolute = new Bench(['APP_URL' => 'https://sms.example.test/aatosms/public'], '/aatosms/public/index.php');
     $report = $absolute->call(['check' => '1'])->body;
     contains('  [WARN] This page was reached as /aatosms/public/index.php.', $report);
-    contains('Callback URLs ....... https://sms.example.test/sms/index.php', $report);
+    contains('Callback URLs ....... https://sms.example.test/aatosms/public/index.php', $report);
+    contains("\nResult: no problems, 1 warning(s).\n", $report);
 
     // The command line has no address, so the section is left out.
     [$report] = check(new Bench(), []);
     lacks('Web server', $report, 'command line report');
+});
+
+test('check in the browser: an APP_URL that points somewhere else is noticed', function (): void {
+    $wrong = new Bench(['APP_URL' => 'https://sms.example.test/sms'], '/aatosms/index.php');
+    $report = $wrong->call(['check' => '1'])->body;
+    contains('Callback URLs ....... https://sms.example.test/sms/index.php', $report);
+    contains('  [WARN] APP_URL makes the PBX send the keys of the caller to /sms/index.php, but this page was reached as /aatosms/index.php.', $report);
+    contains("\nResult: no problems, 1 warning(s).\n", $report);
+
+    foreach ([
+        ['https://sms.example.test/aatosms', '/aatosms/index.php'],
+        ['https://sms.example.test/AATOSMS/', '/aatosms/index.php'],
+        ['https://sms.example.test', '/index.php'],
+        ['https://sms.example.test:8443/a/b', '/a/b/responder.php'],
+    ] as [$appUrl, $path]) {
+        $right = new Bench(['APP_URL' => $appUrl], $path);
+        $report = $right->call(['check' => '1'])->body;
+        lacks('[WARN]', $report, 'report for ' . $appUrl);
+        contains("\nResult: no problems found.\n", $report);
+    }
+
+    // On the command line the address of the web server is not known: nothing to compare.
+    [$report] = check(new Bench(['APP_URL' => 'https://sms.example.test/sms']), []);
+    contains('Callback URLs ....... https://sms.example.test/sms/index.php', $report);
+    lacks('[WARN]', $report, 'command line report');
 });
