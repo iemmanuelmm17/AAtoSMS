@@ -112,7 +112,7 @@ final class App
 
         try {
             $token = $request->get('call');
-            $self = $this->selfUrl($request);
+            $self = $this->config->scriptUrl($request->path);
 
             return $token === '' ? $this->startCall($request, $self) : $this->continueCall($request, $token, $self);
         } catch (\Throwable $error) {
@@ -251,17 +251,6 @@ final class App
             // Releases the lock on the call, also when something above failed.
             $session->close();
         }
-    }
-
-    /**
-     * Address of this script, where the PBX sends the keys of a <Gather>: the path
-     * it was reached at (same host), or below APP_URL when that is set.
-     */
-    private function selfUrl(Request $request): string
-    {
-        $script = $request->path !== '' ? $request->path : '/index.php';
-
-        return $this->config->appUrl !== '' ? $this->config->appUrl . '/' . basename($script) : $script;
     }
 
     /** URL the PBX requests after the next <Gather>. One parameter, so no "&" is needed. */

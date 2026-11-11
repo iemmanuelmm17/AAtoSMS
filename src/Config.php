@@ -93,11 +93,11 @@ final class Config
     {
         $file = self::envFile($projectRoot);
         if (!is_file($file)) {
-            throw new ConfigException(sprintf('Configuration file not found: %s. Copy .env.example to .env and fill it in.', $file));
+            throw new ConfigException(sprintf('Configuration file not found: %s. Copy .env.example to .env and fill it in.', self::nativePath($file)));
         }
         $contents = @file_get_contents($file);
         if ($contents === false) {
-            throw new ConfigException(sprintf('Configuration file is not readable by PHP: %s', $file));
+            throw new ConfigException(sprintf('Configuration file is not readable by PHP: %s', self::nativePath($file)));
         }
 
         return self::fromArray(self::parseEnv($contents), $projectRoot);
@@ -208,7 +208,7 @@ final class Config
         if ($apiCaFile !== '') {
             $apiCaFile = self::resolvePath($apiCaFile, $projectRoot);
             if (!is_file($apiCaFile) || !is_readable($apiCaFile)) {
-                $errors[] = sprintf('NS_API_CA_FILE does not exist or is not readable by PHP: %s', $apiCaFile);
+                $errors[] = sprintf('NS_API_CA_FILE does not exist or is not readable by PHP: %s', self::nativePath($apiCaFile));
             }
         }
 
@@ -292,6 +292,25 @@ final class Config
         return $config;
     }
 
+    /**
+     * Address that the PBX is told to send the keys of a caller to. Without APP_URL it
+     * is the path the script was reached at, on the same host. APP_URL may name the
+     * folder that holds the script (https://host/aatosms) or the script itself
+     * (https://host/aatosms/index.php).
+     *
+     * @param string $path address of the running script on this server (/aatosms/index.php), '' when unknown
+     */
+    public function scriptUrl(string $path): string
+    {
+        $script = $path !== '' ? $path : '/index.php';
+        if ($this->appUrl === '') {
+            return $script;
+        }
+        $namesScript = preg_match('~[^/]\.php\z~i', (string) parse_url($this->appUrl, PHP_URL_PATH)) === 1;
+
+        return $namesScript ? $this->appUrl : $this->appUrl . '/' . basename($script);
+    }
+
     /** Never expose secrets through var_dump()/print_r() of this object. */
     public function __debugInfo(): array
     {
@@ -309,6 +328,12 @@ final class Config
         $full = $isAbsolute ? $path : rtrim($projectRoot, '/\\') . '/' . $path;
 
         return rtrim($full, '/\\');
+    }
+
+    /** A path the way the operating system writes it (backslashes on Windows), for messages. */
+    public static function nativePath(string $path): string
+    {
+        return DIRECTORY_SEPARATOR === '\\' ? str_replace('/', '\\', $path) : $path;
     }
 
     private static function isHttpUrl(string $url): bool

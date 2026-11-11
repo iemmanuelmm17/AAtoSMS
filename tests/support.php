@@ -317,9 +317,7 @@ final class Bench
         $this->api = new FakeApi();
         $this->app = App::fromConfig($this->config, App::loggerFor($this->config), $this->api);
         $this->path = $self;
-        if ($this->config->appUrl !== '') {
-            $this->self = $this->config->appUrl . '/' . basename($self);
-        }
+        $this->self = $this->config->scriptUrl($self);
     }
 
     public function __destruct()

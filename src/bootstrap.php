@@ -27,5 +27,6 @@ require_once __DIR__ . '/CallStore.php';
 require_once __DIR__ . '/RateLimiter.php';
 require_once __DIR__ . '/CallPlan.php';
 require_once __DIR__ . '/CallFlow.php';
+require_once __DIR__ . '/PhpExtension.php';
 require_once __DIR__ . '/Diagnostics.php';
 require_once __DIR__ . '/App.php';

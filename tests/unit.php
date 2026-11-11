@@ -247,6 +247,32 @@ test('config: values are trimmed, normalised and overridable', function (): void
     same(['SOMETHING_ELSE', 'CALLER_ID_DIGITSTYLE'], $config->unknownKeys, 'misspelled names are reported');
 });
 
+test('config: APP_URL may name the folder of the script or the script itself', function (): void {
+    $url = static fn (string $appUrl, string $path): string => Config::fromArray(['APP_URL' => $appUrl] + REQUIRED, '/srv/aatosms')->scriptUrl($path);
+
+    // Without APP_URL the PBX is sent back to the path the script was reached at.
+    same('/aatosms/index.php', $url('', '/aatosms/index.php'));
+    same('/index.php', $url('', ''), 'no web server: the usual name');
+
+    // The folder: the name of the running script is added.
+    same('https://sms.example.test/aatosms/index.php', $url('https://sms.example.test/aatosms', '/local/index.php'));
+    same('https://sms.example.test/aatosms/responder.php', $url('https://sms.example.test/aatosms/', '/local/responder.php'));
+    same('https://sms.example.test/index.php', $url('https://sms.example.test', ''));
+    same('https://sms.example.php/index.php', $url('https://sms.example.php', '/index.php'), 'a host name is not a script');
+    same('https://sms.example.test/v2.php.old/index.php', $url('https://sms.example.test/v2.php.old', '/index.php'));
+
+    // The script: used as it is, as in the To-Web URL.
+    same('http://192.0.2.10/aatosms/public/index.php', $url('http://192.0.2.10/aatosms/public/index.php', '/aatosms/public/index.php'));
+    same('https://sms.example.test/sms/Responder.PHP', $url('https://sms.example.test/sms/Responder.PHP', '/local/index.php'));
+    same('https://sms.example.test/index.php', $url('https://sms.example.test/index.php', ''));
+});
+
+test('config: paths in messages are written the way the operating system writes them', function (): void {
+    same(str_replace('/', DIRECTORY_SEPARATOR, 'D:\\www\\aatosms/var/logs'), Config::nativePath('D:\\www\\aatosms/var/logs'));
+    same(DIRECTORY_SEPARATOR === '/' ? '/srv/aatosms/.env' : '\\srv\\aatosms\\.env', Config::nativePath('/srv/aatosms/.env'));
+    same('', Config::nativePath(''));
+});
+
 test('config: the storage folder may be relative or absolute, on Windows too', function (): void {
     $path = static fn (string $value, string $root): string => Config::fromArray(['STORAGE_PATH' => $value] + REQUIRED, $root)->storagePath;
     same('D:\\www\\aatosms/var', $path('var', 'D:\\www\\aatosms'));

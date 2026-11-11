@@ -19,6 +19,22 @@ jobs:
         php: ['8.2', '8.4', '8.5']
     steps:
       - uses: actions/checkout@v7
+      # For the last step: the "ext" folder of the thread safe PHP download.
+      - name: Thread safe PHP, only to borrow its ext folder
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl
+          coverage: none
+        env:
+          phpts: ts
+      - name: Keep that ext folder
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        run: |
+          php -r 'exit(PHP_ZTS ? 0 : 1);'
+          cp -r "$(cygpath -u "$(php -r 'echo ini_get("extension_dir");')")" "$(cygpath -u "$RUNNER_TEMP")/ts-ext"
+          ls "$(cygpath -u "$RUNNER_TEMP")/ts-ext/php_curl.dll"
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -55,3 +71,22 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           php -d curl.cainfo= -d openssl.cafile= -r 'require "src/bootstrap.php"; $answer = AAtoSMS\NetSapiens::curlTransport("GET", "https://api.github.com/zen", [], null, ["timeout" => 20, "connect_timeout" => 10, "ca_file" => ""]); echo $answer["error"] === "" ? "::notice::" : "::error::", "HTTPS without a CA bundle in php.ini (Windows certificate store): HTTP ", $answer["status"], " ", $answer["error"], PHP_EOL; exit($answer["error"] === "" ? 0 : 1);'
+      # The classic Windows mix-up, as on a server where "php" is the non thread safe PHP but
+      # php.ini names the ext folder of the thread safe one: no extension loads. The check
+      # has to say so, with both builds, instead of asking for "extension=curl".
+      - name: Windows - an ext folder that belongs to another PHP build is named
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        run: |
+          php -r 'exit(PHP_ZTS ? 1 : 0);'
+          printf 'extension_dir="%s"\nextension=curl\n' "$(cygpath -w "$(cygpath -u "$RUNNER_TEMP")/ts-ext")" > mixed.ini
+          printf 'NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n' > .env
+          status=0
+          php -c mixed.ini bin/check.php AccountDomain=1180.DynaCloud AccountUser=9000 > mixed.txt 2>&1 || status=$?
+          rm .env
+          cat mixed.txt
+          php -r 'echo "::notice::", str_replace(["%", "\r", "\n"], ["%25", "", "%0A"], (string) file_get_contents("mixed.txt")), PHP_EOL;'
+          test "$status" = 1
+          grep -F 'The cURL extension is not loaded: its file was made for another PHP than the one that runs.' mixed.txt
+          grep -E 'php_curl\.dll \.\.\. API[0-9]{8},TS,VS[0-9]+' mixed.txt
+          grep -E 'this PHP \.+ API[0-9]{8},NTS,VS[0-9]+' mixed.txt
+          grep -F 'Not tested: the API cannot be reached without the cURL extension' mixed.txt

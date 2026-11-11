@@ -118,6 +118,14 @@ The first command checks PHP, the settings and the storage folder. The second on
 reads the auto attendant and shows the text that would be sent - without sending anything.
 To send one real text as a test, add `SendTo=<your mobile number>`.
 
+A server can hold more than one PHP. `php` is the first one Windows finds (`where php`
+lists them), which is not always the one the web server uses. The report names the
+program it ran with. To use another one, write its full path - with XAMPP:
+
+```bat
+C:\xampp\php\php.exe bin\check.php
+```
+
 ### 4. Web server
 
 **Serve only the `public` folder.** It contains the single file the PBX talks to
@@ -235,7 +243,7 @@ to be changed:
 | `CALLER_ID_DIGIT_STYLE` | `words` | How numbers are read back: `words`, `commas`, `hyphens` or `spaces` |
 | `TTS_VOICE`, `TTS_LANGUAGE` | blank | Voice and language of the prompts; blank = the defaults of the PBX |
 | `MAX_ATTEMPTS` | `3` | How often a prompt is played before the call ends |
-| `APP_URL` | blank | Public address of the folder with `index.php`. Set it if the keys a caller presses seem to be ignored. |
+| `APP_URL` | blank | Public address of the application: the folder with `index.php`, or `index.php` itself, as in the To-Web URL. Set it if the keys a caller presses seem to be ignored. |
 | `NS_DEFAULT_DOMAIN` | blank | Domain to use when the PBX does not send `AccountDomain` |
 | `LOG_LEVEL` | `info` | `debug` also logs every request and every XML answer |
 | `PROMPT_...` | | The wording of every prompt; `{number}` is replaced by the phone number |
@@ -257,6 +265,7 @@ The API token, the key and the call ids are never written to the log.
 | What happens | Look for | Usual cause |
 | --- | --- | --- |
 | The call drops as soon as the key is pressed, nothing in the log | Web server access log; step 5 above | The core cannot reach the address, or PHP cannot write to `var` (then the lines are in the PHP error log) |
+| The check says that the cURL extension is not loaded | The lines below that message | `extension=curl` is missing in `php.ini`, or PHP cannot load `php_curl.dll`. On Windows the usual cause is a mix of two PHP downloads: `php.exe` from the "Non Thread Safe" one and the `ext` folder from the "Thread Safe" one, or the other way round. `php -v` then starts with warnings that end in "These options need to match". The check names both builds and the PHP to use |
 | Every address of the application gives HTTP 500 (IIS: 500.19) | The error page or the Apache error log names `web.config` or `.htaccess` | The web server does not accept a safety-net file of this project (see [Security](#security)). Delete it: `web.config` on IIS, the `.htaccess` files on Apache. They are not needed when only `public` is served |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
 | The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = key 2 has no text; "SMSNumber ... not a valid 10-digit number" |

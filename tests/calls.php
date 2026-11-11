@@ -268,6 +268,13 @@ test('callback URLs: path on the same host by default, absolute with APP_URL', f
     $action = gather($proxied->call())['action'];
     ok(preg_match('~\Ahttps://sms\.example\.test/public-name/responder\.php\?call=[a-f0-9]{32}\.1\z~', $action) === 1, 'proxied: ' . $action);
 
+    // APP_URL may also be the address of the script itself, the way it is written in the To-Web URL.
+    $script = new Bench(['APP_URL' => 'http://192.0.2.10/aatosms/public/index.php'], '/aatosms/public/index.php');
+    $action = gather($script->call())['action'];
+    ok(preg_match('~\Ahttp://192\.0\.2\.10/aatosms/public/index\.php\?call=[a-f0-9]{32}\.1\z~', $action) === 1, 'script: ' . $action);
+    same(ENTER, spoken($script->press('2')));
+    ok(str_starts_with(gather($script->last)['action'], 'http://192.0.2.10/aatosms/public/index.php?call='), 'every step');
+
     // Without a web server (no script path) the usual file name is assumed.
     $app = \AAtoSMS\App::fromConfig($relative->config, \AAtoSMS\App::loggerFor($relative->config), new FakeApi());
     $answer = $app->handle(new \AAtoSMS\Request([], ['key' => Bench::KEY, 'NmsAni' => '8452632561', 'NmsDnis' => '8457747000', 'AccountUser' => '9000', 'AccountDomain' => '1180.DynaCloud'], 'GET'));
