@@ -18,7 +18,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         php: ['8.2', '8.4', '8.5']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -54,4 +54,4 @@ jobs:
       - name: Windows without a CA bundle - a public HTTPS server is accepted
         if: runner.os == 'Windows'
         run: |
-          php -d curl.cainfo= -d openssl.cafile= -r 'require "src/bootstrap.php"; $answer = AAtoSMS\NetSapiens::curlTransport("GET", "https://api.github.com/zen", [], null, ["timeout" => 20, "connect_timeout" => 10, "ca_file" => ""]); echo "HTTP ", $answer["status"], " ", $answer["error"], PHP_EOL; exit($answer["error"] === "" ? 0 : 1);'
+          php -d curl.cainfo= -d openssl.cafile= -r 'require "src/bootstrap.php"; $answer = AAtoSMS\NetSapiens::curlTransport("GET", "https://api.github.com/zen", [], null, ["timeout" => 20, "connect_timeout" => 10, "ca_file" => ""]); echo $answer["error"] === "" ? "::notice::" : "::error::", "HTTPS without a CA bundle in php.ini (Windows certificate store): HTTP ", $answer["status"], " ", $answer["error"], PHP_EOL; exit($answer["error"] === "" ? 0 : 1);'

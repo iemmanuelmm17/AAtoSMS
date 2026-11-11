@@ -35,16 +35,4 @@ require __DIR__ . '/unit.php';
 require __DIR__ . '/calls.php';
 require __DIR__ . '/check.php';
 
-foreach (Results::$failures as $failure) {
-    echo $failure, "\n\n";
-}
-printf(
-    "%s: %d passed, %d failed (PHP %s, %s, %.1f s)\n",
-    Results::$failures === [] ? 'OK' : 'FAILED',
-    Results::$passed,
-    count(Results::$failures),
-    PHP_VERSION,
-    PHP_OS_FAMILY,
-    microtime(true) - $started
-);
-exit(Results::$failures === [] ? 0 : 1);
+exit(finish('', $started));

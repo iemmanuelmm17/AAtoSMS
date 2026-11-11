@@ -73,7 +73,7 @@ POST {NS_API_URL}/domains/{domain}/users/{sms user}/messages
 ## Requirements
 
 - PHP 8.2 or newer with the **cURL** extension. Written for PHP 8.5; the tests run on
-  PHP 8.2 to 8.5.
+  PHP 8.2 to 8.5, on Windows and Linux.
 - A web server that runs PHP and that the NetSapiens core can reach, preferably over HTTPS.
 - NetSapiens v44.1 or newer with Voice Services (text-to-speech) enabled, because the
   prompts use the `<Say>` verb.

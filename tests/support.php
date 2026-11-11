@@ -43,6 +43,45 @@ function test(string $name, callable $body): void
     }
 }
 
+/**
+ * Prints the failed tests and the one-line result. On GitHub Actions the result is
+ * also shown on the summary page of the run.
+ *
+ * @param string $what    which tests these were, as the start of the text in brackets
+ * @param string $details extra output that helps to explain failures
+ * @return int exit code: 0 when everything passed
+ */
+function finish(string $what, float $started, string $details = ''): int
+{
+    foreach (Results::$failures as $failure) {
+        echo $failure, "\n\n";
+    }
+    echo $details;
+
+    $passed = Results::$failures === [];
+    $result = sprintf(
+        '%s: %d passed, %d failed (%sPHP %s, %s, %.1f s)',
+        $passed ? 'OK' : 'FAILED',
+        Results::$passed,
+        count(Results::$failures),
+        $what,
+        PHP_VERSION,
+        PHP_OS_FAMILY,
+        microtime(true) - $started
+    );
+    echo $result, "\n";
+
+    if (getenv('GITHUB_ACTIONS') === 'true') {
+        $escape = static fn (string $text): string => str_replace(['%', "\r", "\n"], ['%25', '%0D', '%0A'], $text);
+        foreach (array_slice(Results::$failures, 0, 10) as $failure) {
+            echo '::error::', $escape($failure), "\n";
+        }
+        echo '::', $passed ? 'notice' : 'error', '::', $escape($result), "\n";
+    }
+
+    return $passed ? 0 : 1;
+}
+
 function same(mixed $expected, mixed $actual, string $what = 'value'): void
 {
     if ($expected !== $actual) {
