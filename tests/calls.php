@@ -359,10 +359,94 @@ test('typed numbers: what is accepted and what is not', function (): void {
     foreach (['2015551234', '2015551234#', '12015551234', ' 2015551234 '] as $digits) {
         same(CONFIRM_5551234, $answerTo($digits), $digits);
     }
-    foreach (['201555123', '1201555123', '0015551234', '2010551234', '201555123*', '*', '20155512345', '2015551234*', '#', '201-555-1234', '+12015551234', '(201)5551234'] as $digits) {
+    foreach (['201555123', '0015551234', '2010551234', '201555123*', '*', '20155512345', '2015551234*', '#', '201-555-1234', '+12015551234', '(201)5551234', '120155512345'] as $digits) {
         same('Sorry, that is not a valid ten digit number. ' . ENTER, $answerTo($digits), $digits);
     }
     same('Sorry, we did not receive a response. ' . ENTER, $answerTo(''));
+});
+
+test('a number typed with the leading 1: the eleventh key is awaited in silence', function (): void {
+    $bench = new Bench(['INTERDIGIT_TIMEOUT_SECONDS' => '4']);
+    $bench->call();
+    $bench->press('2');
+
+    // Ten keys were collected, and the caller is about to press the last one.
+    $wait = $bench->press('1201555123');
+    same('', spoken($wait), 'nothing is said');
+    $gather = gather($wait);
+    same(['dtmf', '1', '4', '4'], [$gather['input'], $gather['numDigits'], $gather['timeout'], $gather['digitEndTimeout']], 'one more key, as long as between two keys');
+    ok(str_ends_with($gather['action'], '.3'), 'third callback');
+    same(0, count($bench->api->requestsOf('POST')));
+
+    same(CONFIRM_5551234, spoken($bench->press('4')));
+    same(SENT, spoken($bench->press('1')));
+    same('12015551234', $bench->api->texts()[0]['destination']);
+
+    // The last key does not come, or what was typed is not a number: one failed try, asked again.
+    foreach (['' => '1201555123', '#' => '1201555123', '*' => '1201555123', '4' => '1001555123', '0' => '1201055123', '45' => '1201555123'] as $last => $first) {
+        $again = new Bench();
+        $again->call();
+        $again->press('2');
+        same('', spoken($again->press($first)), $first);
+        same('Sorry, that is not a valid ten digit number. ' . ENTER, spoken($again->press((string) $last)), $first . ' then "' . $last . '"');
+        same('10', gather($again->last)['numDigits']);
+
+        // What was typed before is forgotten: the next ten keys are a number of their own.
+        same(CONFIRM_5551234, spoken($again->press('2015551234')), 'after ' . $first . ' then "' . $last . '"');
+        same('', $again->calls()[0]['typed']);
+    }
+
+    // Each of them counts as one try.
+    $three = new Bench();
+    $three->call();
+    $three->press('2');
+    foreach ([1, 2] as $try) {
+        $three->press('1201555123');
+        ok(gather($three->press('')) !== null, 'try ' . $try . ' asks again');
+    }
+    $three->press('1201555123');
+    same(GOODBYE, spoken($three->press('')));
+    same(0, count($three->api->requestsOf('POST')));
+});
+
+test('the pound key after a typed number is not taken as an answer', function (): void {
+    $bench = new Bench();
+    $bench->call();
+    $bench->press('2');
+    $bench->press('2015551234');
+
+    // It arrives as the answer to "You entered ...", before that could be heard.
+    same(CONFIRM_5551234, spoken($bench->press('#')), 'asked again, without an apology');
+    same('1', gather($bench->last)['numDigits']);
+    same('Sorry, that is not a valid selection. ' . CONFIRM_5551234, spoken($bench->press('#')), 'only once');
+    same(SENT, spoken($bench->press('1')));
+    same(1, count($bench->api->texts()));
+
+    // It does not use up a try, and every number that is typed gets the same treatment.
+    $once = new Bench(['MAX_ATTEMPTS' => '1']);
+    $once->call();
+    $once->press('2');
+    $once->press('2015551234');
+    same(CONFIRM_5551234, spoken($once->press('##')));
+    same(ENTER, spoken($once->press('2')));
+    $once->press('9175550100');
+    contains('You entered nine, one, seven,', spoken($once->press('#')));
+    lacks('Sorry', spoken($once->last), 'second number');
+    same(GOODBYE, spoken($once->press('#')));
+
+    // Also after a number that was typed with the leading 1 and the pound key.
+    $both = new Bench();
+    $both->call();
+    $both->press('2');
+    $both->press('1201555123');
+    $both->press('4');
+    same(CONFIRM_5551234, spoken($both->press('#')));
+    same(SENT, spoken($both->press('1')));
+
+    // At the first menu no number was typed: there the pound key is a wrong key like any other.
+    $menu = new Bench();
+    $menu->call();
+    same('Sorry, that is not a valid selection. ' . MENU, spoken($menu->press('#')));
 });
 
 test('three bad numbers end the call without a text', function (): void {
@@ -371,7 +455,7 @@ test('three bad numbers end the call without a text', function (): void {
     $bench->press('2');
     $bench->press('555');
     $bench->press('');
-    $end = $bench->press('1111111111');
+    $end = $bench->press('0123456789');
     same(GOODBYE, spoken($end));
     ok(hangsUp($end), 'hung up');
     same(0, count($bench->api->requestsOf('POST')));
@@ -750,7 +834,7 @@ test('the saved state of a call holds what is needed and no secret', function ()
     $bench->press('2');
     $state = $bench->calls()[0];
     same(
-        ['domain', 'aa_user', 'prompt', 'option', 'sms_user', 'from', 'caller', 'ref', 'created', 'call_id', 'message', 'stage', 'attempts', 'pending', 'sms', 'step', 'responses'],
+        ['domain', 'aa_user', 'prompt', 'option', 'sms_user', 'from', 'caller', 'ref', 'created', 'call_id', 'message', 'stage', 'attempts', 'pending', 'typed', 'pound', 'sms', 'step', 'responses'],
         array_keys($state)
     );
     same(['enter', 2, 'none', Bench::SCRIPT, '20261111-abc123'], [$state['stage'], $state['step'], $state['sms'], $state['message'], $state['call_id']]);

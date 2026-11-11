@@ -18,6 +18,10 @@ namespace AAtoSMS;
  *
  * No answer or a wrong key repeats the prompt; after MAX_ATTEMPTS tries in a row
  * the caller hears a goodbye and the call ends without a text.
+ *
+ * Ten keys are collected for a number. Two habits make a caller press one more,
+ * and both are understood: the leading 1 (the eleventh key is then awaited in
+ * silence) and the pound key at the end (it is not taken as an answer).
  */
 final class CallFlow
 {
@@ -74,13 +78,31 @@ final class CallFlow
         $this->logger->debug('Keys received', ['stage' => $state['stage'], 'digits' => $digits]);
 
         if ($state['stage'] === 'enter') {
-            $number = preg_match('/\A[0-9]+\z/', $keys) === 1 ? PhoneNumber::normalize($keys) : null;
+            $typed = (string) ($state['typed'] ?? '');
+            $state['typed'] = '';
+            if ($typed === '' && preg_match('/\A1[0-9]{9}\z/', $keys) === 1) {
+                // Ten keys that start with 1: the number is being typed as 1 + area code + number,
+                // which is one key more than was collected. Wait in silence for the last key.
+                $state['typed'] = $keys;
+
+                return $this->awaitLastKey($state, $action);
+            }
+
+            $number = preg_match('/\A[0-9]+\z/', $typed . $keys) === 1 ? PhoneNumber::normalize($typed . $keys) : null;
             if ($number === null) {
-                return $this->retry($state, $action, $digits === '' ? 'no_input' : 'invalid_number');
+                return $this->retry($state, $action, $digits === '' && $typed === '' ? 'no_input' : 'invalid_number');
             }
             $state['pending'] = $number;
 
             return $this->moveTo($state, 'confirm', $action);
+        }
+
+        if ($state['stage'] === 'confirm' && $keys === '' && $digits !== '' && !($state['pound'] ?? false)) {
+            // The pound key pressed after the last digit arrives here, as the answer to a
+            // question that was not heard yet. It ended the number; ask again, once.
+            $state['pound'] = true;
+
+            return $this->ask($state, $action);
         }
 
         if ($keys === '1') {
@@ -106,6 +128,7 @@ final class CallFlow
     {
         $state['stage'] = $stage;
         $state['attempts'] = 0;
+        $state['pound'] = false;
 
         return $this->ask($state, $action);
     }
@@ -214,6 +237,19 @@ final class CallFlow
             $state['ref'],
             Xml::gather($action, $numDigits, $this->config->inputTimeout, $this->config->interdigitTimeout, $this->say($text))
         );
+    }
+
+    /**
+     * No prompt: waits, as long as between any two keys, for the eleventh key of a
+     * number that is typed with the leading 1.
+     *
+     * @param array<string, mixed> $state
+     */
+    private function awaitLastKey(array $state, string $action): string
+    {
+        $seconds = $this->config->interdigitTimeout;
+
+        return Xml::document($state['ref'], Xml::gather($action, 1, $seconds, $seconds, ''));
     }
 
     /** @param array<string, mixed> $state */

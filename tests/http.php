@@ -404,6 +404,23 @@ test('http: POST from the core - press 2, type a number, confirm; sent from the 
     same(['type' => 'sms', 'message' => Bench::SCRIPT, 'destination' => '12015551234', 'from-number' => '18457747000'], $texts()[1]);
 });
 
+test('http: a number typed with the leading 1, then the pound key', function () use ($entry, $texts, $callback): void {
+    $menu = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY] + PBX));
+    $enter = http('GET', $callback($menu) . '&Digits=2');
+
+    $wait = http('GET', $callback($enter) . '&Digits=1201555123');
+    same('', spoken($wait), 'ten keys that start with 1: the last key is awaited in silence');
+    same('1', gather($wait)['numDigits']);
+
+    $confirm = http('GET', $callback($wait) . '&Digits=4');
+    contains('You entered 2, 0, 1, 5, 5, 5, 1, 2, 3, 4.', spoken($confirm));
+
+    $again = http('POST', $callback($confirm), PBX + ['Digits' => '#']);
+    same(spoken($confirm), spoken($again), 'the pound key is not an answer: the question is asked again');
+    same($again->body, http('GET', $callback($confirm) . '&Digits=%23')->body, 'a repeated request gets the same answer');
+    same(2, count($texts()), 'nothing was sent');
+});
+
 test('http: a form body is read even when the PBX does not say it is a form', function () use ($entry): void {
     foreach (['Content-Type: text/plain', 'Content-Type:'] as $header) {
         $menu = http('POST', $entry . '?key=' . HTTP_KEY, PBX, [$header]);

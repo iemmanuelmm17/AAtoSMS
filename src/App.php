@@ -186,6 +186,8 @@ final class App
             'stage' => 'menu',
             'attempts' => 0,
             'pending' => '',
+            'typed' => '',
+            'pound' => false,
             'sms' => 'none',
             'step' => 1,
             'responses' => [],

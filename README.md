@@ -28,6 +28,8 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
 ```
 
 - Numbers are read back digit by digit ("eight, four, five, ...").
+- A typed number may start with 1 (eleven keys instead of ten) and may be ended with the
+  pound key. Both are understood.
 - No answer or a wrong key repeats the prompt. After three tries in a row (`MAX_ATTEMPTS`)
   the caller hears a goodbye and the call ends without a text.
 - A caller without a usable caller ID (blocked, or an internal extension) is asked for a
