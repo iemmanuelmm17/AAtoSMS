@@ -19,6 +19,23 @@ jobs:
         php: ['8.2', '8.4', '8.5']
     steps:
       - uses: actions/checkout@v7
+      # For the last step: a second PHP installation, the "Thread Safe" download.
+      - name: Thread safe PHP, to be set aside
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl
+          coverage: none
+        env:
+          phpts: ts
+      - name: Set it aside
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        run: |
+          php -r 'exit(PHP_ZTS ? 0 : 1);'
+          other="$(cygpath -u "$RUNNER_TEMP")/ts-php"
+          cp -r "$(cygpath -u "$(php -r 'echo dirname(PHP_BINARY);')")" "$other"
+          ls "$other/php.exe" "$other/ext/php_curl.dll"
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -46,6 +63,50 @@ jobs:
           printf 'NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n' > .env
           php bin/check.php
           rm .env
+      # The settings file outside of the project folder: env-path.txt in the project folder
+      # says where, written the way the operating system writes a path.
+      - name: Installation check with .env in another folder
+        run: |
+          settings='NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n'
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            folder="$(cygpath -u "$RUNNER_TEMP")/aatosms settings"
+            mkdir -p "$folder"
+            written="$(cygpath -w "$folder")"
+            separator='\'
+          else
+            folder="$RUNNER_TEMP/aatosms settings"
+            mkdir -p "$folder"
+            written="$folder"
+            separator='/'
+          fi
+          printf "$settings" > "$folder/.env"
+          cp env-path.example.txt env-path.txt
+          php bin/check.php > unchanged.txt 2>&1 && status=0 || status=$?
+          cat unchanged.txt
+          test "$status" = 1
+          grep -F "[FAIL] Configuration file not found" unchanged.txt
+          printf '%s\r\n' "$written" >> env-path.txt
+          tail -n 2 env-path.txt
+          php bin/check.php > elsewhere.txt 2>&1 && status=0 || status=$?
+          cat elsewhere.txt
+          test "$status" = 0
+          grep -F "[ OK ] ${written}${separator}.env is valid" elsewhere.txt
+          grep -F "found through " elsewhere.txt | grep -F "env-path.txt"
+          grep -F "Result: no problems found." elsewhere.txt
+          printf "$settings" > .env
+          php bin/check.php > leftover.txt 2>&1 && status=0 || status=$?
+          cat leftover.txt
+          test "$status" = 0
+          grep -F ".env also exists, but it is not used: env-path.txt names another place." leftover.txt
+          rm .env
+          printf '%s\r\n' "${written}${separator}missing" > env-path.txt
+          php bin/check.php > nowhere.txt 2>&1 && status=0 || status=$?
+          cat nowhere.txt
+          test "$status" = 1
+          grep -F "env-path.txt names ${written}${separator}missing, which does not exist or cannot be read by this PHP." nowhere.txt
+          rm env-path.txt
+          rm -r "$folder"
+          echo "::notice::.env in another folder: $(grep -F ' is valid' elsewhere.txt | sed 's/^ *//') - $(grep -F 'found through ' elsewhere.txt | sed 's/^ *//')"
       # A Windows PHP as it is installed by hand: no CA bundle in php.ini. The application
       # then verifies HTTPS certificates against the Windows certificate store.
       - name: Windows without a CA bundle - the test certificate is still refused
@@ -55,3 +116,29 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           php -d curl.cainfo= -d openssl.cafile= -r 'require "src/bootstrap.php"; $answer = AAtoSMS\NetSapiens::curlTransport("GET", "https://api.github.com/zen", [], null, ["timeout" => 20, "connect_timeout" => 10, "ca_file" => ""]); echo $answer["error"] === "" ? "::notice::" : "::error::", "HTTPS without a CA bundle in php.ini (Windows certificate store): HTTP ", $answer["status"], " ", $answer["error"], PHP_EOL; exit($answer["error"] === "" ? 0 : 1);'
+      # The classic Windows mix-up: "php" is the non thread safe PHP, but its php.ini names
+      # the ext folder of the thread safe one, so no extension loads. The check has to say
+      # that, with both builds, and the PHP it points to has to be one that works.
+      - name: Windows - an ext folder that belongs to another PHP is named
+        if: runner.os == 'Windows' && matrix.php == '8.5'
+        run: |
+          php -r 'exit(PHP_ZTS ? 1 : 0);'
+          other="$(cygpath -u "$RUNNER_TEMP")/ts-php"
+          printf 'extension_dir="%s"\nextension=curl\n' "$(cygpath -w "$other/ext")" > mixed.ini
+          printf 'NS_API_URL=https://pbx.example.test/ns-api/v2\nNS_API_TOKEN=ci-token-0123456789\nWEBRESPONDER_KEY=ci-key-0123456789-abcdefghijklmn\n' > .env
+          status=0
+          php -c mixed.ini bin/check.php AccountDomain=1180.DynaCloud AccountUser=9000 > mixed.txt 2>&1 || status=$?
+          cat mixed.txt
+          test "$status" = 1
+          grep -F 'The cURL extension is not loaded: its file was made for another PHP than the one that runs.' mixed.txt
+          grep -E 'php_curl\.dll \.\.\. API[0-9]{8},TS,VS[0-9]+' mixed.txt
+          grep -E 'this PHP \.+ API[0-9]{8},NTS,VS[0-9]+' mixed.txt
+          grep -F 'not to the one that runs. Use that PHP:' mixed.txt
+          grep -F 'ts-php\php.exe" bin\check.php' mixed.txt
+          grep -F 'Not tested: the API cannot be reached without the cURL extension' mixed.txt
+          "$other/php.exe" -c mixed.ini bin/check.php > other.txt 2>&1
+          cat other.txt
+          grep -F '(cli, Windows, thread safe)' other.txt
+          grep -F '[ OK ] cURL ' other.txt
+          rm .env
+          echo "::notice::An ext folder of another PHP is named: file $(grep -oE 'API[0-9]{8},TS,VS[0-9]+' mixed.txt | tail -1), this PHP $(grep -oE 'API[0-9]{8},NTS,VS[0-9]+' mixed.txt | tail -1). The PHP it points to: $(grep -oE 'cURL [0-9.]+' other.txt | head -1)."

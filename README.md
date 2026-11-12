@@ -25,6 +25,9 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
                         +-- 2 ------------------------> back to "Please enter ..."
 
 "Your text message has been sent. Thank you for calling. Goodbye."     (call is hung up)
+
+With repeat=yes in the To-Web URL:
+"Your text message has been sent. Returning to the main menu."         (back to the auto attendant)
 ```
 
 - Numbers are read back digit by digit ("eight, four, five, ...").
@@ -37,6 +40,9 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
 - If anything is wrong (API down, no text on key 2, bad settings) the caller hears a short
   apology, the call is hung up, and the reason is written to the log.
 - One call sends at most one text. A request that the PBX repeats never sends it again.
+- After the text the call is hung up. With `repeat=yes` in the To-Web URL the caller
+  goes back to the auto attendant instead: see
+  [Back to the main menu after the text](#back-to-the-main-menu-after-the-text).
 
 ## Where the values come from
 
@@ -49,6 +55,7 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
 | Prompt name of the auto attendant | `AAPrompt` in the URL, else the rule below |
 | Key whose message is the text | `SMSOption` in the URL, else `SMS_SCRIPT_OPTION` in `.env` (default `2`) |
 | User the text is sent as | `SMSUser` in the URL, else `SMS_USER` in `.env`, else the auto attendant extension |
+| What happens after the text | `repeat` in the URL: `yes` = back to the auto attendant; `no`, blank or absent = hang up |
 
 Prompt name rule:
 
@@ -107,6 +114,9 @@ Fill in the three required values:
 
 Everything else has a working default. `.env.example` explains every setting.
 
+`.env` does not have to stay in the project folder: see
+[Keeping `.env` in another folder](#keeping-env-in-another-folder).
+
 ### 3. Check the installation
 
 ```bat
@@ -117,6 +127,14 @@ php bin\check.php AccountDomain=1180.DynaCloud AccountUser=9000 SMSNumber=845774
 The first command checks PHP, the settings and the storage folder. The second one also
 reads the auto attendant and shows the text that would be sent - without sending anything.
 To send one real text as a test, add `SendTo=<your mobile number>`.
+
+A server can hold more than one PHP. `php` is the first one Windows finds (`where php`
+lists them), which is not always the one the web server uses. The report names the
+program it ran with. To use another one, write its full path - with XAMPP:
+
+```bat
+C:\xampp\php\php.exe bin\check.php
+```
 
 ### 4. Web server
 
@@ -147,7 +165,8 @@ If `D:\www` is itself the root of the web site, the project can already be reach
 is then inside the web site and the private files are protected only by the safety nets
 described under [Security](#security). Adding the virtual directory or alias above is
 still the better setup: it takes precedence over the folder of the same name, so only
-`public` remains reachable.
+`public` remains reachable. If you leave it as it is, at least
+[keep `.env` in another folder](#keeping-env-in-another-folder).
 
 The Windows account that runs PHP for the web site needs **Modify** permission on the
 `var` folder and read permission on the rest. On IIS that account is usually `IUSR`
@@ -171,19 +190,59 @@ It shows the same report as step 3, but produced by the PHP of the web server, w
 often has another `php.ini` and runs under another Windows account. Fix everything
 marked `[FAIL]`. This page never sends a text.
 
+### Keeping `.env` in another folder
+
+`.env` holds the API token. It does not have to be in the project folder: a small text
+file in the project folder, `env-path.txt`, tells the application where `.env` is. That
+way the token can be kept out of every folder that the web server can reach.
+
+```bat
+cd /d D:\www\aatosms
+mkdir D:\private\aatosms
+copy .env D:\private\aatosms\.env
+copy env-path.example.txt env-path.txt
+notepad env-path.txt
+```
+
+In `env-path.txt`, write the folder on a line of its own at the end, and save:
+
+```
+D:\private\aatosms
+```
+
+Repeat steps 3 and 5. Both reports must name the new file under "Settings":
+
+```
+  [ OK ] D:\private\aatosms\.env is valid
+         found through D:\www\aatosms\env-path.txt
+```
+
+Then delete the old `D:\www\aatosms\.env`. The check reminds you as long as it is there.
+
+- The line names the folder that holds `.env`, or the `.env` file itself. A relative path
+  starts at the project folder. Lines that start with `#` are comments.
+- The Windows account that runs PHP for the web site needs read permission on the folder.
+- `env-path.txt` contains no secret. It is not one of the project files, so copying a new
+  version of the project over the folder does not replace it. Without it, the application
+  reads `.env` in the project folder.
+- Logs and call data can be moved out of the project folder too: set `STORAGE_PATH` in
+  `.env`, for example to `D:\private\aatosms\var`. The web server account needs Modify
+  permission there.
+
 ### Moving the folder
 
 Nothing in the application depends on where it is. To move it, for example from
 `D:\www\aatosms` to `C:\aatosms`:
 
-1. Move the whole folder, including `.env` and `var`.
+1. Move the whole folder, including `.env`, `var` and `env-path.txt` if you made one.
 2. Point the web server at the new `public` folder (IIS: physical path of the virtual
    directory; Apache: the `Alias` and `<Directory>` lines).
 3. Give the web server account Modify permission on the new `var` folder.
 4. Repeat steps 3 and 5 of the installation.
 
 The address does not change, so nothing has to be changed on the PBX. Only if you put
-absolute paths in `.env` (`STORAGE_PATH`, `NS_API_CA_FILE`) do they need a look.
+absolute paths in `.env` (`STORAGE_PATH`, `NS_API_CA_FILE`), or a relative path in
+`env-path.txt`, do they need a look.
 
 ## NetSapiens setup
 
@@ -217,9 +276,37 @@ Parameters you can add to the address:
 | `SMSUser` | User the text is sent as: the user that owns the SMS number. | `SMSUser=7003` |
 | `AAUser` | Auto attendant extension, when it is not `AccountUser`. | `AAUser=8002` |
 | `AAPrompt` | Prompt name, when the rule does not fit. | `AAPrompt=Prompt_800202` |
+| `repeat` | What happens after the text. `yes`: the caller goes back to the auto attendant (the main menu). `no`, blank or absent: the call is hung up. | `repeat=yes` |
 
 One installation serves any number of auto attendants and domains: each dial translation
 carries its own parameters.
+
+### Back to the main menu after the text
+
+By default the call is hung up once the text was sent. Add `repeat=yes` to the address to
+send the caller back to the auto attendant instead:
+
+```
+https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&SMSNumber=8457747000&repeat=yes
+```
+
+The caller then hears "Your text message has been sent. Returning to the main menu."
+(`PROMPT_SENT_REPEAT` in `.env`), and the application tells the PBX to forward the call
+to the extension of the auto attendant (`AAUser`, else `AccountUser`), which answers it
+the way it answers a new call.
+
+- `repeat=no`, a blank value or no `repeat` at all hang up, as before. Upper or lower case
+  does not matter, and `true`/`1` and `false`/`0` are understood as well. Any other value
+  hangs up too and leaves a warning in the log; the text is sent all the same.
+- Only a call whose text was sent goes back. A call that ends for another reason (the text
+  could not be sent, the limit for that number is reached, no valid answer after three
+  tries) is hung up as before.
+- The PBX forwards only a call that a user owns. That is the case when the auto attendant
+  itself sends the call to the Web Responder destination, as in step 1. A call that a
+  phone number sends straight to that destination has no owner, and is not forwarded.
+- A caller who is back in the menu can press the key again and get the text once more;
+  for the application that is a new call. The limit per number applies
+  (`SMS_LIMIT_PER_DESTINATION`, 3 per hour by default).
 
 ## Settings
 
@@ -235,7 +322,7 @@ to be changed:
 | `CALLER_ID_DIGIT_STYLE` | `words` | How numbers are read back: `words`, `commas`, `hyphens` or `spaces` |
 | `TTS_VOICE`, `TTS_LANGUAGE` | blank | Voice and language of the prompts; blank = the defaults of the PBX |
 | `MAX_ATTEMPTS` | `3` | How often a prompt is played before the call ends |
-| `APP_URL` | blank | Public address of the folder with `index.php`. Set it if the keys a caller presses seem to be ignored. |
+| `APP_URL` | blank | Public address of the application: the folder with `index.php`, or `index.php` itself, as in the To-Web URL. Set it if the keys a caller presses seem to be ignored. |
 | `NS_DEFAULT_DOMAIN` | blank | Domain to use when the PBX does not send `AccountDomain` |
 | `LOG_LEVEL` | `info` | `debug` also logs every request and every XML answer |
 | `PROMPT_...` | | The wording of every prompt; `{number}` is replaced by the phone number |
@@ -250,20 +337,30 @@ A normal call writes two lines:
 2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Text sent {"to":"18452632561","from":"18457747000",...,"http_status":200,"api_response":"{\"code\":202,\"message\":\"Accepted\"}",...}
 ```
 
+With `repeat=yes` a third line follows:
+
+```
+2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Forwarding the call back to the auto attendant {"extension":"9000"}
+```
+
 The value in brackets identifies the call. The same value is in every XML answer
-(`<!-- AAtoSMS 1.0.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+(`<!-- AAtoSMS 1.1.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
 The API token, the key and the call ids are never written to the log.
 
 | What happens | Look for | Usual cause |
 | --- | --- | --- |
 | The call drops as soon as the key is pressed, nothing in the log | Web server access log; step 5 above | The core cannot reach the address, or PHP cannot write to `var` (then the lines are in the PHP error log) |
+| The check says that the cURL extension is not loaded | The lines below that message | `extension=curl` is missing in `php.ini`, or PHP cannot load `php_curl.dll`. On Windows the usual cause is a mix of two PHP downloads: `php.exe` from the "Non Thread Safe" one and the `ext` folder from the "Thread Safe" one, or the other way round. `php -v` then starts with warnings that end in "These options need to match". The check names both builds and the PHP to use |
 | Every address of the application gives HTTP 500 (IIS: 500.19) | The error page or the Apache error log names `web.config` or `.htaccess` | The web server does not accept a safety-net file of this project (see [Security](#security)). Delete it: `web.config` on IIS, the `.htaccess` files on Apache. They are not needed when only `public` is served |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
+| The caller hears the apology right away, on every call | `Request failed: ...` in `var\logs` of the project folder | The settings cannot be read. The line says why: `.env` is not there, a value in it is wrong, or `env-path.txt` names a place without `.env` or one that the web server account cannot read. `php bin\check.php` shows the same message |
 | The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = key 2 has no text; "SMSNumber ... not a valid 10-digit number" |
 | The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back. `APP_URL` blank: set it. `APP_URL` set: it is wrong (step 5 warns when its path does not fit) |
 | The caller hears the apology after pressing 1 | `Text not sent: ...` with the answer of the API | The number is not an SMS number of that user: set `SMSUser`/`SMS_USER`, or try another `SMS_NUMBER_FORMAT` |
 | "Your text message has been sent" but nothing arrives | `Text sent` with `http_status` 2xx | The API accepted the text; check the SMS number and carrier side in NetSapiens |
 | "A text message was already sent to this number recently" | `limit for this destination reached` | `SMS_LIMIT_PER_DESTINATION`: that number already got its texts for this hour |
+| `repeat=yes` is in the address, but the caller hears "Thank you for calling. Goodbye." and the call ends | `"repeat":` in the `Call started` line | `"repeat":false`: the address of the dial translation that the call came through has no `repeat=yes`, or the value is misspelled (then a line `repeat in the To-Web URL is neither yes nor no` precedes it). No `"repeat"` in that line at all: the server runs a version older than 1.1.0; the first line of the check shows the version |
+| The caller hears "Returning to the main menu", then the call drops | `Forwarding the call back to the auto attendant` with the extension | The application asked for the forward and the PBX did not carry it out. Either the call has no owner (it has to reach the Web Responder through the auto attendant or another user, not straight from a phone number), or the dial plan of that user does not lead to the extension named in the line |
 | `cURL error 60` | The `hint` at the end of the log line | PHP cannot verify the HTTPS certificate of the API server. Usually PHP has no CA certificates: download `cacert.pem` from https://curl.se/docs/caextract.html and name it in `NS_API_CA_FILE` (or in `curl.cainfo` in `php.ini`). The hint says so when instead the certificate has expired or does not match the host name in `NS_API_URL`. |
 | `cURL error 6`, `7` or `28` | The `hint` at the end of the log line | The web server cannot reach the API: DNS, firewall, or a wrong `NS_API_URL` |
 
@@ -283,6 +380,8 @@ For a closer look set `LOG_LEVEL=debug`, make one call, and set it back.
   net the project also contains `web.config` (IIS) and `.htaccess` files (Apache) that
   refuse the private parts if the whole folder is served by mistake. Do not rely on
   them. Test: `https://your-server/aatosms/.env` must give an error page.
+- `.env` can be kept in a folder that no web site reaches:
+  [Keeping `.env` in another folder](#keeping-env-in-another-folder).
 
 ## Tests
 
@@ -312,6 +411,7 @@ bin/check.php        installation check for the command line
 tests/               tests (run.php, http.php) and their stand-ins for the API
 var/                 logs, call state and send records (created at run time, private)
 .env.example         template of the settings file
+env-path.example.txt template of env-path.txt, which says where .env is kept (optional)
 ```
 
 ## Limits

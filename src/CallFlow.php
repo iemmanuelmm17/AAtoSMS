@@ -16,6 +16,9 @@ namespace AAtoSMS;
  *              1 -> send to the entered number           2 -> enter
  *   done     the text was sent (or could not be) and the call is hung up
  *
+ * With repeat=yes in the To-Web URL, a caller whose text was sent is not hung up
+ * but handed back to the auto attendant, and hears its main menu again.
+ *
  * No answer or a wrong key repeats the prompt; after MAX_ATTEMPTS tries in a row
  * the caller hears a goodbye and the call ends without a text.
  *
@@ -147,7 +150,8 @@ final class CallFlow
     }
 
     /**
-     * Sends the text exactly once per call, then says the result and hangs up.
+     * Sends the text exactly once per call, then says the result and ends the call
+     * (or, with repeat=yes and a text that was sent, hands it back to the auto attendant).
      *
      * @param array<string, mixed> $state
      * @param callable(): void     $checkpoint
@@ -252,10 +256,20 @@ final class CallFlow
         return Xml::document($state['ref'], Xml::gather($action, 1, $seconds, $seconds, ''));
     }
 
-    /** @param array<string, mixed> $state */
+    /**
+     * Last answer of a call: says how it went and hangs up. Only a text that was sent
+     * together with repeat=yes ends differently: the call goes back to the auto attendant.
+     *
+     * @param array<string, mixed> $state
+     */
     private function finish(array &$state, string $prompt): string
     {
         $state['stage'] = 'done';
+        if ($prompt === 'sent' && ($state['repeat'] ?? false) === true) {
+            $this->logger->info('Forwarding the call back to the auto attendant', ['extension' => $state['aa_user']]);
+
+            return Xml::document($state['ref'], $this->say($this->config->prompts['sent_repeat']), Xml::forward((string) $state['aa_user']));
+        }
 
         return Xml::document($state['ref'], $this->say($this->config->prompts[$prompt]), Xml::hangup());
     }

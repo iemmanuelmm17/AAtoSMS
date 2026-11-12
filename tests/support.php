@@ -181,10 +181,9 @@ function gather(Response|string $response): ?array
     return $attributes;
 }
 
-/** True when the answer ends the call: <Hangup/> is the last verb and nothing waits for keys. */
-function hangsUp(Response|string $response): bool
+/** The last verb of the answer: what the PBX does once everything before it is done. */
+function lastVerb(\DOMDocument $document): ?\DOMElement
 {
-    $document = xml($response);
     $last = null;
     foreach ($document->documentElement->childNodes as $node) {
         if ($node instanceof \DOMElement) {
@@ -192,7 +191,37 @@ function hangsUp(Response|string $response): bool
         }
     }
 
-    return $last?->nodeName === 'Hangup' && $document->getElementsByTagName('Gather')->length === 0;
+    return $last;
+}
+
+/** True when the answer ends the call: <Hangup/> is the last verb, nothing waits for keys, nothing is forwarded. */
+function hangsUp(Response|string $response): bool
+{
+    $document = xml($response);
+
+    return lastVerb($document)?->nodeName === 'Hangup'
+        && $document->getElementsByTagName('Gather')->length === 0
+        && $document->getElementsByTagName('Forward')->length === 0;
+}
+
+/**
+ * The destination the answer forwards the call to. Null unless a plain <Forward> is the
+ * last verb and the only one of its kind, and nothing waits for keys or hangs up.
+ */
+function forwardsTo(Response|string $response): ?string
+{
+    $document = xml($response);
+    $last = lastVerb($document);
+    if ($last?->nodeName !== 'Forward'
+        || $last->attributes->length !== 0
+        || $document->getElementsByTagName('Forward')->length !== 1
+        || $document->getElementsByTagName('Gather')->length !== 0
+        || $document->getElementsByTagName('Hangup')->length !== 0
+    ) {
+        return null;
+    }
+
+    return $last->textContent;
 }
 
 function fixture(string $name): string
@@ -317,9 +346,7 @@ final class Bench
         $this->api = new FakeApi();
         $this->app = App::fromConfig($this->config, App::loggerFor($this->config), $this->api);
         $this->path = $self;
-        if ($this->config->appUrl !== '') {
-            $this->self = $this->config->appUrl . '/' . basename($self);
-        }
+        $this->self = $this->config->scriptUrl($self);
     }
 
     public function __destruct()

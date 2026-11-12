@@ -22,6 +22,7 @@ declare(strict_types=1);
 namespace AAtoSMS\Tests;
 
 use AAtoSMS\ApiException;
+use AAtoSMS\Config;
 use AAtoSMS\NetSapiens;
 use AAtoSMS\Response;
 
@@ -113,6 +114,57 @@ function startServer(array $arguments, string $logFile, array $environment)
     }
 
     return $process;
+}
+
+/**
+ * Starts "php -S 127.0.0.1:<free port> ..." and waits until it answers.
+ *
+ * A port that was free a moment ago can be taken by the time the server asks for it, and a
+ * busy computer can be slow to start a program. So a start that fails is repeated on another
+ * port before the tests give up.
+ *
+ * @param list<string>          $arguments   what follows the address: "-t <folder>", or a router script
+ * @param array<string, string> $environment added to the environment of this process
+ * @param string                $path        address that shows that the server works
+ * @return array{0:resource, 1:int} the process and its port
+ */
+function serve(array $arguments, string $logFile, array $environment, string $path): array
+{
+    for ($attempt = 1; $attempt <= 3; $attempt++) {
+        [$port] = freePorts(1);
+        $process = startServer(array_merge(['-S', '127.0.0.1:' . $port], $arguments), $logFile, $environment);
+        $deadline = microtime(true) + 20;
+        do {
+            usleep(50000);
+            $running = proc_get_status($process)['running'];
+            if (!$running) {
+                break; // it ends at once when it does not get the port
+            }
+            // Asked briefly and often: Windows takes two seconds to say that nothing listens yet.
+            $socket = @stream_socket_client('tcp://127.0.0.1:' . $port, $errorCode, $errorText, 0.2);
+            if ($socket === false) {
+                continue;
+            }
+            fclose($socket);
+            if (answers('http://127.0.0.1:' . $port . $path, 0) && proc_get_status($process)['running']) {
+                return [$process, $port];
+            }
+        } while (microtime(true) < $deadline);
+        stopServer($process);
+        @file_put_contents($logFile, sprintf("(start %d: no answer on port %d, the program %s)\n", $attempt, $port, $running ? 'was still running' : 'had ended'), FILE_APPEND);
+    }
+
+    throw new \RuntimeException(sprintf("php -S 127.0.0.1:<port> %s did not start.\n%s", implode(' ', $arguments), (string) @file_get_contents($logFile)));
+}
+
+/** Ends the tests before the first one: without servers there is nothing to test. */
+function giveUp(string $message): never
+{
+    fwrite(STDERR, $message . "\n");
+    if (getenv('GITHUB_ACTIONS') === 'true') {
+        echo '::error::', str_replace(['%', "\r", "\n"], ['%25', '%0D', '%0A'], $message), "\n";
+    }
+    exit(1);
 }
 
 /** @param resource $process */
@@ -257,23 +309,32 @@ if ($ownServers) {
         exit(2);
     }
     $folder = temporaryFolder();
-    [$apiPort, $appPort, $secondPort] = freePorts(3);
-    file_put_contents($folder . '/.env', settings($folder, $apiPort));
-    $servers['api'] = startServer(
-        ['-S', '127.0.0.1:' . $apiPort, __DIR__ . '/fixtures/mock-api.php'],
-        $folder . '/api-server.log',
-        ['AATOSMS_MOCK_LOG' => $folder . '/api.jsonl']
-    );
-    foreach (['app' => $appPort, 'app2' => $secondPort] as $name => $port) {
-        $servers[$name] = startServer(
-            ['-S', '127.0.0.1:' . $port, '-t', dirname(__DIR__) . '/public'],
-            $folder . '/' . $name . '-server.log',
-            ['AATOSMS_ENV_FILE' => $folder . '/.env']
+    try {
+        [$servers['api'], $apiPort] = serve(
+            [__DIR__ . '/fixtures/mock-api.php'],
+            $folder . '/api-server.log',
+            ['AATOSMS_MOCK_LOG' => $folder . '/api.jsonl'],
+            '/'
         );
+        file_put_contents($folder . '/.env', settings($folder, $apiPort));
+        $ports = [];
+        foreach (['app', 'app2'] as $name) {
+            [$servers[$name], $ports[$name]] = serve(
+                ['-t', dirname(__DIR__) . '/public'],
+                $folder . '/' . $name . '-server.log',
+                ['AATOSMS_ENV_FILE' => $folder . '/.env'],
+                '/index.php'
+            );
+        }
+    } catch (\RuntimeException $error) {
+        array_map(stopServer(...), $servers);
+        usleep(200000); // Windows: let the servers release their log files
+        removeFolder($folder);
+        giveUp('The test servers did not start. ' . $error->getMessage());
     }
-    $app = 'http://127.0.0.1:' . $appPort;
-    $second = 'http://127.0.0.1:' . $secondPort;
-    $apiUp = answers('http://127.0.0.1:' . $apiPort . '/');
+    $app = 'http://127.0.0.1:' . $ports['app'];
+    $second = 'http://127.0.0.1:' . $ports['app2'];
+    file_put_contents($folder . '/api.jsonl', ''); // forget the request that waited for the stand-in API
 } else {
     $folder = rtrim($options['dir'] ?? '', '/\\');
     if (!is_file($folder . '/.env')) {
@@ -282,7 +343,9 @@ if ($ownServers) {
     }
     $app = rtrim($options['app'], '/');
     $second = rtrim($options['app2'] ?? $options['app'], '/');
-    $apiUp = true;
+    if (!answers($app . '/index.php') || !answers($second . '/index.php')) {
+        giveUp('The application does not answer at ' . $app . '/index.php and ' . $second . '/index.php');
+    }
 }
 
 $stop = static function () use (&$servers, $ownServers, $folder): void {
@@ -298,18 +361,6 @@ $stop = static function () use (&$servers, $ownServers, $folder): void {
     $servers = [];
 };
 register_shutdown_function($stop); // also when this script itself fails
-
-if (!$apiUp || !answers($app . '/index.php') || !answers($second . '/index.php')) {
-    $output = '';
-    foreach (glob($folder . '/*-server.log') ?: [] as $file) {
-        $output .= basename($file) . ":\n" . file_get_contents($file) . "\n";
-    }
-    fwrite(STDERR, "The test servers did not start.\n" . $output);
-    exit(1);
-}
-if ($ownServers) {
-    file_put_contents($folder . '/api.jsonl', ''); // forget the request that waited for the stand-in API
-}
 
 $started = microtime(true);
 $entry = $app . '/index.php';
@@ -539,17 +590,46 @@ test('http: calls that arrive together cannot exceed the limit per destination',
     same(3, count($texts()) - $before, 'texts sent (the limit is 3)');
 });
 
-test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts): void {
+test('http: repeat=yes in the address - after the text the call is forwarded back to the auto attendant', function () use ($entry, $texts, $callback, $log): void {
+    // As the core sends it with <HttpMethod=POST>: its values in the body, ours in the address.
+    $pbx = ['NmsAni' => '7185550142'] + PBX;
     $before = count($texts());
-    $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000']));
+    $menu = http('POST', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'repeat' => 'yes']), $pbx + ['Digits' => '']);
+    contains('calling from, 7, 1, 8, 5, 5, 5, 0, 1, 4, 2, press 1', spoken($menu));
+
+    $done = http('POST', $callback($menu), $pbx + ['Digits' => '1']);
+    same(200, $done->status);
+    same('application/xml; charset=UTF-8', $done->headers['Content-Type'] ?? null);
+    same('Your text message has been sent. Returning to the main menu.', spoken($done));
+    same('9000', forwardsTo($done), 'forwarded to the extension of the auto attendant');
+    ok(!hangsUp($done), 'the call is not hung up');
+    same(1, count($texts()) - $before, 'texts sent');
+    same('17185550142', $texts()[$before]['destination']);
+
+    same($done->body, http('POST', $callback($menu), $pbx + ['Digits' => '1'])->body, 'a repeated request gets the same answer');
+    same(1, count($texts()) - $before, 'and no second text');
+    contains('Forwarding the call back to the auto attendant {"extension":"9000"}', $log());
+
+    // The same caller without repeat in the address is hung up, as before.
+    $menu = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY] + $pbx));
+    $done = http('GET', $callback($menu) . '&Digits=1');
+    same('Your text message has been sent. Thank you for calling. Goodbye.', spoken($done));
+    ok(hangsUp($done), 'the call is hung up');
+    same(null, forwardsTo($done));
+});
+
+test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts, $folder): void {
+    $before = count($texts());
+    $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000', 'repeat' => 'yes']));
     same(200, $report->status);
     same('text/plain; charset=UTF-8', $report->headers['Content-Type'] ?? null);
     contains($ownServers ? '(cli-server, ' : '  [ OK ] PHP ' . PHP_MAJOR_VERSION . '.', $report->body, 'report');
     contains('  [ OK ] this page was reached as ' . $scriptPath, $report->body, 'report');
-    contains('  [ OK ] settings are valid', $report->body, 'report');
+    contains($ownServers ? '  [ OK ] ' . Config::nativePath($folder . '/.env') . " is valid\n         API " : ' is valid', $report->body, 'report');
     contains(' can be written by this PHP', $report->body, 'report');
     contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $report->body, 'report');
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $report->body, 'report');
     contains("\nResult: no problems found.\n", $report->body, 'report');
     lacks(HTTP_KEY, $report->body, 'report');
     lacks(HTTP_TOKEN, $report->body, 'report');
@@ -574,10 +654,58 @@ test('http: log and stored data', function () use ($folder, $log): void {
     }
     $sent = array_values(array_diff(scandir($folder . '/var/sent') ?: [], ['.', '..']));
     sort($sent);
-    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '8452632561.json'], $sent, 'send records, one per destination');
+    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '7185550142.json', '8452632561.json'], $sent, 'send records, one per destination');
     same('[]', file_get_contents($folder . '/var/sent/2125550147.json'), 'the text that the API refused is not counted');
     same(3, count(json_decode((string) file_get_contents($folder . '/var/sent/3125550188.json'), true)), 'texts counted for the number that reached the limit');
 });
+
+// ---------------------------------------------------------------------------
+// The settings file in another folder than the project
+// ---------------------------------------------------------------------------
+
+if ($ownServers) {
+    test('http: .env is kept in another folder, and env-path.txt in the project folder says where', function () use (&$servers, $folder, $apiPort, $api): void {
+        // A project folder of its own, so that the files of this checkout are left alone. Its
+        // index.php does what public/index.php does, with the application code of this checkout.
+        $project = $folder . '/moved/www/aatosms';
+        $private = $folder . '/moved/private settings';
+        mkdir($project . '/public', 0700, true);
+        mkdir($private, 0700, true);
+        file_put_contents(
+            $project . '/public/index.php',
+            '<?php require ' . var_export(dirname(__DIR__) . '/src/bootstrap.php', true) . '; AAtoSMS\\App::run(dirname(__DIR__));'
+        );
+        file_put_contents($private . '/.env', settings($folder, $apiPort));
+        file_put_contents($project . '/' . Config::ENV_POINTER, "# written by tests/http.php\r\n\"" . Config::nativePath($private) . "\"\r\n");
+
+        // An empty value takes AATOSMS_ENV_FILE out of the environment of that server.
+        [$servers['moved'], $port] = serve(['-t', $project . '/public'], $folder . '/moved-server.log', ['AATOSMS_ENV_FILE' => ''], '/index.php');
+        $moved = 'http://127.0.0.1:' . $port . '/index.php';
+
+        $report = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000']));
+        same(200, $report->status);
+        contains('  [ OK ] ' . Config::nativePath($private) . Config::nativePath('/.env') . " is valid\n         found through ", $report->body, 'report');
+        ok(preg_match('~^         found through .*[\\\\/]aatosms[\\\\/]env-path\.txt$~m', $report->body) === 1, "the report names env-path.txt:\n" . $report->body);
+        contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
+        contains("\nResult: no problems found.\n", $report->body, 'report');
+
+        // And a call starts with the settings of that file: the key, the API, the digit style.
+        $before = count($api());
+        $menu = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY] + PBX + ['Digits' => '']));
+        same(200, $menu->status);
+        contains('the number you are calling from, 8, 4, 5, 2, 6, 3, 2, 5, 6, 1, press 1.', spoken($menu));
+        same($before + 1, count($api()), 'the auto attendant was read from the API');
+        same(403, http('GET', $moved . '?' . http_build_query(['key' => 'not-the-key'] + PBX))->status, 'the key of that file is needed');
+
+        // The file is read for every request: when it names another place, the next request fails.
+        file_put_contents($project . '/' . Config::ENV_POINTER, Config::nativePath($folder . '/moved/nowhere') . "\r\n");
+        $broken = http('GET', $moved . '?' . http_build_query(['key' => HTTP_KEY] + PBX));
+        ok(hangsUp($broken), 'without settings the call is ended');
+        lacks('press 1', $broken->body, 'answer without settings');
+        $bootLog = implode('', array_map('file_get_contents', glob($project . '/var/logs/*.log') ?: []));
+        contains(' names ' . Config::nativePath($folder . '/moved/nowhere') . ', which does not exist or cannot be read by this PHP.', $bootLog, 'log of the project folder');
+    });
+}
 
 // ---------------------------------------------------------------------------
 // HTTPS: the certificate of the API server is verified
@@ -640,7 +768,7 @@ $serverOutput = '';
 if (Results::$failures !== [] && $ownServers) {
     // What the servers printed (PHP messages, requests) helps to explain a failure.
     foreach (glob($folder . '/*-server.log') ?: [] as $file) {
-        $lines = preg_grep('/ (Accepted|Closing)\s*\z/', file($file, FILE_IGNORE_NEW_LINES) ?: [], PREG_GREP_INVERT);
+        $lines = preg_grep('/ (Accepted|Closing|Closed without sending a request; .*)\s*\z/', file($file, FILE_IGNORE_NEW_LINES) ?: [], PREG_GREP_INVERT);
         $serverOutput .= basename($file) . ":\n  " . implode("\n  ", $lines ?: []) . "\n\n";
     }
 }

@@ -167,7 +167,7 @@ final class NetSapiens
     public static function curlTransport(string $method, string $url, array $headers, ?string $body, array $options): array
     {
         if (!function_exists('curl_init')) {
-            return ['status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not enabled (add extension=curl to php.ini).'];
+            return ['status' => 0, 'body' => '', 'error' => 'The PHP cURL extension is not loaded. The installation check (php bin/check.php, or check=1 in the browser) says why.'];
         }
 
         $handle = curl_init();

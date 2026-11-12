@@ -1,5 +1,6 @@
-# Server-only settings (API token, responder key)
+# Server-only settings (API token, responder key), and the note that says where they are kept
 /.env
+/env-path.txt
 
 # Runtime data: logs, call state, send records
 /var/*

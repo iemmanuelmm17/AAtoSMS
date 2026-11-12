@@ -22,6 +22,7 @@ final class CallSetupException extends \RuntimeException
  *   key with the text    SMSOption, SMS_SCRIPT_OPTION in .env (default 2)
  *   user that sends      SMSUser, SMS_USER in .env, the auto attendant extension
  *   number to send from  SMSNumber, NmsDnis
+ *   after the text       repeat: yes = back to the auto attendant; no, blank or absent = hang up
  */
 final class CallPlan
 {
@@ -89,6 +90,20 @@ final class CallPlan
         }
 
         return ['sms_user' => $smsUser, 'from' => $from];
+    }
+
+    /**
+     * What "repeat" asks for once the text was sent: true = the caller goes back to the
+     * auto attendant, false = the call is hung up. Null = the value is neither yes nor no;
+     * the call is then hung up as well, because a mistake here is no reason to refuse a text.
+     */
+    public static function repeat(Request $request): ?bool
+    {
+        return match (strtolower($request->get('repeat'))) {
+            'yes', 'y', 'true', 'on', '1' => true,
+            '', 'no', 'n', 'false', 'off', '0' => false,
+            default => null,
+        };
     }
 
     /** First value that is not blank. "0" counts as a value. */

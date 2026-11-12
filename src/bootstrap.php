@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 namespace AAtoSMS;
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 require_once __DIR__ . '/Config.php';
 require_once __DIR__ . '/Logger.php';
@@ -27,5 +27,6 @@ require_once __DIR__ . '/CallStore.php';
 require_once __DIR__ . '/RateLimiter.php';
 require_once __DIR__ . '/CallPlan.php';
 require_once __DIR__ . '/CallFlow.php';
+require_once __DIR__ . '/PhpExtension.php';
 require_once __DIR__ . '/Diagnostics.php';
 require_once __DIR__ . '/App.php';

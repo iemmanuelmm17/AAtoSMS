@@ -29,15 +29,24 @@ final class Diagnostics
     /** Address of the web entry script on this server (/aatosms/index.php); '' on the command line. */
     private string $webPath = '';
 
+    /** Without cURL the API cannot be reached, so those parts of the check are left out. */
+    private bool $curl = false;
+
+    /** @var array<string, mixed> see PhpExtension::environment() */
+    private array $php;
+
     /**
-     * @param Config|null     $config already loaded settings; null = read the .env file
-     * @param NetSapiens|null $api    API client to use; null = build one from the settings
+     * @param Config|null               $config already loaded settings; null = read the .env file
+     * @param NetSapiens|null           $api    API client to use; null = build one from the settings
+     * @param array<string, mixed>|null $php    what is known about the running PHP; null = find out
      */
     public function __construct(
         private string $projectRoot,
         private ?Config $config = null,
         private ?NetSapiens $api = null,
+        ?array $php = null,
     ) {
+        $this->php = $php ?? PhpExtension::environment();
     }
 
     public function problems(): int
@@ -47,7 +56,7 @@ final class Diagnostics
 
     /**
      * @param Request $request   the values a call would carry: AccountDomain, AccountUser,
-     *                           SMSNumber, SMSOption, SMSUser, AAUser, AAPrompt, plus SendTo
+     *                           SMSNumber, SMSOption, SMSUser, AAUser, AAPrompt, repeat, plus SendTo
      * @param bool    $allowSend whether SendTo=<number> may send one real text
      */
     public function run(Request $request, bool $allowSend = false): string
@@ -63,7 +72,9 @@ final class Diagnostics
         }
         if ($this->checkSettings()) {
             $this->checkStorage();
-            $this->describeCertificates();
+            if ($this->curl) {
+                $this->describeCertificates();
+            }
             $this->checkCall($request, $allowSend);
         }
 
@@ -79,18 +90,27 @@ final class Diagnostics
 
     private function checkPhp(): void
     {
+        $php = $this->php;
         $this->section('PHP');
-        $about = sprintf('PHP %s (%s, %s)', PHP_VERSION, PHP_SAPI, PHP_OS_FAMILY);
+        $about = sprintf('PHP %s (%s, %s, %s)', $php['version'], $php['sapi'], PHP_OS_FAMILY, $php['thread_safe'] ? 'thread safe' : 'non thread safe');
         PHP_VERSION_ID >= 80200 ? $this->ok($about) : $this->fail($about . ' is too old: PHP 8.2 or newer is needed.');
-
-        $ini = php_ini_loaded_file();
-        if (extension_loaded('curl')) {
-            $curl = curl_version();
-            $this->ok(sprintf('cURL %s with %s', $curl['version'] ?? '?', ($curl['ssl_version'] ?? '') !== '' ? $curl['ssl_version'] : 'no HTTPS support'));
-        } else {
-            $this->fail('The cURL extension is not enabled. Add "extension=curl" to ' . ($ini !== false ? $ini : 'php.ini') . ' and restart the web server.');
+        if ($php['sapi'] === 'cli' && $php['binary'] !== '') {
+            $this->note('program: ' . $php['binary']);
         }
-        $this->note('php.ini: ' . ($ini !== false ? $ini : 'none loaded'));
+        $this->note('php.ini: ' . ($php['ini'] !== '' ? $php['ini'] : 'none loaded'));
+
+        $this->curl = in_array('curl', $php['loaded'], true);
+        if ($this->curl) {
+            $curl = function_exists('curl_version') ? (array) curl_version() : [];
+            $this->ok(sprintf('cURL %s with %s', $curl['version'] ?? '?', ($curl['ssl_version'] ?? '') !== '' ? $curl['ssl_version'] : 'no HTTPS support'));
+
+            return;
+        }
+        $explanation = PhpExtension::whyMissing('curl', $php);
+        $this->fail(array_shift($explanation));
+        foreach ($explanation as $line) {
+            $this->note($line);
+        }
     }
 
     /**
@@ -109,6 +129,8 @@ final class Diagnostics
         $this->note('project folder is probably reachable from the web, private files included.');
         $this->note(sprintf('Test it: open %s/.env.example in this browser. An error page is the right answer.', $match[1]));
         $this->note('If the file is shown, make the web server serve only the "public" folder (README, "Web server").');
+        $this->note('If that cannot be done, keep .env and the "var" folder somewhere else: see env-path.example.txt');
+        $this->note('and STORAGE_PATH in .env.');
     }
 
     private function checkSettings(): bool
@@ -119,17 +141,20 @@ final class Diagnostics
                 $this->config = Config::load($this->projectRoot);
             } catch (ConfigException $error) {
                 $this->fail($error->getMessage());
+                $this->checkPointerName();
 
                 return false;
             }
-            $this->ok(Config::envFile($this->projectRoot) . ' is valid');
-        } else {
-            $this->ok('settings are valid');
         }
 
         $config = $this->config;
-        if ($config->unknownKeys !== []) {
-            $this->warn('Names in .env that this application does not know (misspelled?): ' . implode(', ', $config->unknownKeys));
+        if ($config->settingsFile !== '') {
+            $this->ok(Config::nativePath($config->settingsFile) . ' is valid');
+            if ($config->pointerFile !== '') {
+                $this->note('found through ' . Config::nativePath($config->pointerFile));
+            }
+        } else {
+            $this->ok('settings are valid');
         }
         $this->note('API ................. ' . $config->apiUrl);
         $this->note('Text comes from ..... auto attendant key ' . $config->smsOption);
@@ -138,9 +163,15 @@ final class Diagnostics
         $this->note('Limit ............... ' . ($config->limitPerDestination === 0
             ? 'none'
             : sprintf('%d text(s) per destination per %d minutes', $config->limitPerDestination, $config->limitWindowMinutes)));
-        $callback = $config->appUrl . '/' . basename($this->webPath !== '' ? $this->webPath : '/index.php');
+        $callback = $config->scriptUrl($this->webPath);
         $this->note('Callback URLs ....... ' . ($config->appUrl !== '' ? $callback : 'same host and path as the To-Web URL'));
-        $this->note('Log ................. ' . $config->storagePath . '/logs (' . $config->logLevel . ')');
+        $this->note('Log ................. ' . Config::nativePath($config->storagePath . '/logs') . ' (' . $config->logLevel . ')');
+
+        if ($config->unknownKeys !== []) {
+            $this->warn('Names in .env that this application does not know (misspelled?): ' . implode(', ', $config->unknownKeys));
+        }
+        $this->checkUnusedSettingsFile($config);
+        $this->checkPointerName();
 
         // The keys a caller presses are sent to APP_URL. Seen from the web server, a wrong path can be spotted.
         $callbackPath = (string) parse_url($callback, PHP_URL_PATH);
@@ -151,6 +182,36 @@ final class Diagnostics
         }
 
         return true;
+    }
+
+    /**
+     * Explorer hides the ending of known file types, so a file that is named "env-path.txt"
+     * there is in fact env-path.txt.txt - which the application does not read.
+     */
+    private function checkPointerName(): void
+    {
+        $name = Config::ENV_POINTER;
+        $folder = rtrim($this->projectRoot, '/\\') . '/';
+        if (is_file($folder . $name) || !is_file($folder . $name . '.txt')) {
+            return;
+        }
+        $this->warn(sprintf('%s is not read: the name has to be %s.', Config::nativePath($folder . $name . '.txt'), $name));
+        $this->note(sprintf('Windows Explorer hides the last ".txt". Rename the file:  ren %s.txt %s', $name, $name));
+    }
+
+    /** A .env that stayed in the project folder after env-path.txt was pointed somewhere else. */
+    private function checkUnusedSettingsFile(Config $config): void
+    {
+        $local = rtrim($this->projectRoot, '/\\') . '/.env';
+        if ($config->pointerFile === '' || !is_file($local)) {
+            return;
+        }
+        $used = realpath($config->settingsFile);
+        if ($used !== false && $used === realpath($local)) {
+            return;
+        }
+        $this->warn(sprintf('%s also exists, but it is not used: %s names another place.', Config::nativePath($local), Config::ENV_POINTER));
+        $this->note('Delete it, so that the API token is kept in one place only.');
     }
 
     private function checkStorage(): void
@@ -165,10 +226,11 @@ final class Diagnostics
                 $failed[] = $folder;
             }
         }
+        $storage = Config::nativePath($this->config->storagePath);
         if ($failed === []) {
-            $this->ok($this->config->storagePath . ' can be written by this PHP');
+            $this->ok($storage . ' can be written by this PHP');
         } else {
-            $this->fail('This PHP cannot write to: ' . implode(', ', $failed) . '. Give the account that runs PHP "Modify" permission on ' . $this->config->storagePath . '.');
+            $this->fail('This PHP cannot write to: ' . Config::nativePath(implode(', ', $failed)) . '. Give the account that runs PHP "Modify" permission on ' . $storage . '.');
         }
     }
 
@@ -178,7 +240,7 @@ final class Diagnostics
         $curlIni = (string) ini_get('curl.cainfo');
         $opensslIni = (string) ini_get('openssl.cafile');
         if ($this->config->apiCaFile !== '') {
-            $this->ok('checked against NS_API_CA_FILE: ' . $this->config->apiCaFile);
+            $this->ok('checked against NS_API_CA_FILE: ' . Config::nativePath($this->config->apiCaFile));
         } elseif ($opensslIni !== '' || $curlIni !== '') {
             $file = $opensslIni !== '' ? $opensslIni : $curlIni;
             is_file($file)
@@ -193,6 +255,12 @@ final class Diagnostics
 
     private function checkCall(Request $request, bool $allowSend): void
     {
+        if (!$this->curl) {
+            $this->section('Auto attendant');
+            $this->note('Not tested: the API cannot be reached without the cURL extension (see "PHP" above).');
+
+            return;
+        }
         if ($request->get('AccountUser') === '' && $request->get('AAUser') === '') {
             $this->section('Auto attendant');
             $this->note('Not tested. Add the values the PBX sends to also read an auto attendant, for example:');
@@ -231,6 +299,18 @@ final class Diagnostics
             return;
         }
 
+        $this->checkSending($request, $allowSend, $api, $source, $message);
+        $this->checkEnding($request, $source['aa_user']);
+    }
+
+    /**
+     * Who sends the text and from which number; with SendTo, one real text.
+     *
+     * @param array{domain:string, aa_user:string, prompt:string, option:string} $source
+     * @param string|null $message the text to send; null when it could not be read
+     */
+    private function checkSending(Request $request, bool $allowSend, NetSapiens $api, array $source, ?string $message): void
+    {
         $sendTo = $request->get('SendTo');
         if ($request->get('SMSNumber') === '' && $request->get('NmsDnis') === '' && $sendTo === '') {
             return;
@@ -275,6 +355,29 @@ final class Diagnostics
                 $this->note($error->hint());
             }
         }
+    }
+
+    /** What "repeat" in the To-Web URL makes of the end of a call. Shown when it is given. */
+    private function checkEnding(Request $request, string $aaUser): void
+    {
+        if ($request->get('repeat') === '') {
+            return;
+        }
+        $this->section('After the text');
+        $repeat = CallPlan::repeat($request);
+        if ($repeat === null) {
+            $this->warn(sprintf('repeat "%s" is neither yes nor no: the call is hung up, as with repeat=no.', $request->get('repeat')));
+
+            return;
+        }
+        if (!$repeat) {
+            $this->ok('repeat=no: the call is hung up');
+
+            return;
+        }
+        $this->ok(sprintf('repeat=yes: the caller is sent back to the auto attendant (forward to %s)', $aaUser));
+        $this->note('The PBX can forward only a call that a user owns, which is the case when the');
+        $this->note('auto attendant itself sends the call to this application.');
     }
 
     /**

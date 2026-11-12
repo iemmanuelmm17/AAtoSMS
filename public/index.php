@@ -9,8 +9,9 @@ declare(strict_types=1);
  *
  *     https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&SMSNumber=8457747000
  *
- * All settings live in the .env file one folder above this one. Nothing in here
- * depends on where the project folder is, so it can be moved freely.
+ * All settings live in the .env file one folder above this one, or in the folder
+ * that env-path.txt there names. Nothing in here depends on where the project
+ * folder is, so it can be moved freely.
  */
 
 if (PHP_VERSION_ID < 80200) {

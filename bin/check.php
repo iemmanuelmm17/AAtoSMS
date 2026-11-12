@@ -37,11 +37,11 @@ Usage: php bin/check.php [Name=value ...]
   SMSNumber=<number>     number the text is sent from
   SendTo=<number>        sends ONE real text to this number
   SMSOption=<key>  SMSUser=<user>  AAUser=<ext>  AAPrompt=<name>  NmsDnis=<number>
-                         same meaning as in the To-Web URL
+  repeat=<yes|no>        same meaning as in the To-Web URL
 
 TEXT;
 
-$known = ['accountdomain', 'accountuser', 'smsnumber', 'sendto', 'smsoption', 'smsuser', 'aauser', 'aaprompt', 'nmsdnis'];
+$known = ['accountdomain', 'accountuser', 'smsnumber', 'sendto', 'smsoption', 'smsuser', 'aauser', 'aaprompt', 'nmsdnis', 'repeat'];
 $values = [];
 foreach (array_slice($argv, 1) as $argument) {
     if (in_array($argument, ['-h', '--help', '/?', 'help'], true)) {

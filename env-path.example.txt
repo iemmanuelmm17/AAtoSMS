@@ -1,0 +1,33 @@
+# =============================================================================
+# AAtoSMS - where the settings file (.env) is kept
+# =============================================================================
+# Normally .env is in the project folder (this folder) and this file is not
+# needed.
+#
+# .env holds the API token. To keep it in another folder - for example one that
+# the web server does not serve:
+#
+#   1. Copy .env to that folder.
+#   2. Copy this file to "env-path.txt" in the project folder:
+#          copy env-path.example.txt env-path.txt
+#   3. In env-path.txt, write the folder on a line of its own at the end of
+#      the file, for example:
+#          D:\private\aatosms
+#   4. Run the installation check:  php bin\check.php
+#      Under "Settings" it names the file that is used.
+#   5. Delete the old .env in the project folder.
+#
+# Rules:
+#   - One path: the folder that holds .env, or the .env file itself.
+#   - A relative path starts at the project folder.
+#   - Lines that start with # are comments. Without a path, the application
+#     reads .env in the project folder.
+#   - The Windows account that runs PHP for the web site needs read permission
+#     on the folder.
+#   - Relative paths inside .env (STORAGE_PATH, NS_API_CA_FILE) still start at
+#     the project folder.
+#
+# env-path.txt contains no secret. It is not one of the project files, so
+# copying a new version of the project over this folder does not replace it.
+# A change takes effect on the next call.
+
