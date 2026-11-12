@@ -58,7 +58,7 @@ test('call: press 1 to text the number the caller is calling from', function ():
 
     $log = $bench->log();
     contains('INFO    [', $log);
-    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","repeat":false,"nms_ani":"8452632561","nms_dnis":"8457747000","message_characters":117,"call_id":"20261111-abc123"}', $log);
+    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","repeat":false,"nms_ani":"8452632561","nms_dnis":"8457747000","message_characters":117,"call_id":"20261111-abc123","ip":"203.0.113.9"}', $log);
     contains('Text sent {"to":"18452632561","from":"18457747000","domain":"1180.DynaCloud","sms_user":"9000","entered_by_caller":false,"http_status":200,"api_response":"{\"code\":202,\"message\":\"Accepted\"}","characters":117}', $log);
 });
 
@@ -1011,6 +1011,149 @@ test('wrong or missing key: refused before anything else happens', function (): 
         same([], $bench->calls(), 'no call state');
         contains('WARNING [-] Request rejected: the key in the URL is missing or wrong {"ip":"203.0.113.9"}', $bench->log());
     }
+});
+
+// The list of the README: one server of the PBX and a block of them.
+const ALLOWED = ['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/24'];
+
+test('allow list: a request from another address is refused before anything else happens', function (): void {
+    // Each of them with the right key and everything else a call needs.
+    foreach (['203.0.113.9', '64.113.254.88', '64.113.0.88', '64.114.255.88', '127.0.0.1', '::1', '::ffff:203.0.113.9', '', 'unknown', '64.113.255.88, 203.0.113.9'] as $ip) {
+        $bench = new Bench(ALLOWED);
+        $bench->ip = $ip;
+        $answer = $bench->call();
+        same(403, $answer->status, var_export($ip, true));
+        same('Access denied.', spoken($answer));
+        ok(hangsUp($answer), 'hung up');
+        same(0, count($bench->api->requests), 'no API call');
+        same([], $bench->calls(), 'no call state');
+        same(
+            1,
+            preg_match('/\A\S+ WARNING \[-\] Request rejected: this address is not on IP_ALLOW_LIST \{"ip":' . preg_quote((string) json_encode($ip), '/') . '\}\n\z/', $bench->log()),
+            'the log has that one line, which names the address: ' . $bench->log()
+        );
+    }
+});
+
+test('allow list: the address is the one the web server reports - nothing in a request can name another', function (): void {
+    $claims = ['ip' => '64.113.255.88', 'IP' => '64.113.255.88', 'REMOTE_ADDR' => '64.113.255.88', 'X-Forwarded-For' => '64.113.255.88', 'HTTP_X_FORWARDED_FOR' => '64.113.255.88', 'Client-IP' => '64.113.255.88'];
+    foreach (['GET', 'POST'] as $method) {
+        $bench = new Bench(ALLOWED);
+        $answer = $bench->call($claims, $method);
+        same(403, $answer->status, $method);
+        same('Access denied.', spoken($answer));
+        same(0, count($bench->api->requests), 'no API call');
+        contains('Request rejected: this address is not on IP_ALLOW_LIST {"ip":"203.0.113.9"}', $bench->log());
+
+        // And a server of the PBX is not locked out by such a value.
+        $bench->ip = '64.113.255.88';
+        same(200, $bench->call(['ip' => '203.0.113.9', 'REMOTE_ADDR' => '203.0.113.9'], $method)->status, $method);
+    }
+});
+
+test('allow list: from an address on the list, a call goes as it always did', function (): void {
+    foreach (['64.113.255.88', '64.113.255.0', '64.113.255.200', '64.113.255.255', '::ffff:64.113.255.7'] as $ip) {
+        $bench = new Bench(ALLOWED);
+        $bench->ip = $ip;
+        $menu = $bench->call();
+        same(200, $menu->status, $ip);
+        contains('To receive a text message at the number you are calling from', spoken($menu));
+        same(SENT, spoken($bench->press('1')), $ip);
+        same([['type' => 'sms', 'message' => Bench::SCRIPT, 'destination' => '18452632561', 'from-number' => '18457747000']], $bench->api->texts());
+        // The log of a call names the address, which is how to find out what belongs on the list.
+        contains('"call_id":"20261111-abc123","ip":' . json_encode($ip) . "}\n", $bench->log());
+        lacks('Request rejected', $bench->log(), 'log');
+    }
+});
+
+test('allow list: the keys of the caller have to come from an address on the list as well', function (): void {
+    $bench = new Bench(ALLOWED);
+    $bench->ip = '64.113.255.88';
+    $menu = $bench->call();
+    $state = $bench->calls();
+    same(1, count($state));
+
+    // Somebody else has the callback address of this call.
+    $bench->ip = '203.0.113.9';
+    $refused = $bench->press('1');
+    same(403, $refused->status);
+    same('Access denied.', spoken($refused));
+    ok(hangsUp($refused), 'hung up');
+    same([], $bench->api->texts(), 'nothing is sent');
+    same($state, $bench->calls(), 'the call is left as it was');
+    contains('WARNING [-] Request rejected: this address is not on IP_ALLOW_LIST {"ip":"203.0.113.9"}', $bench->log());
+    lacks('Keys received', $bench->log(), 'log');
+
+    // The PBX goes on with the call, be it from another one of its servers.
+    $bench->ip = '64.113.255.17';
+    $bench->last = $menu;
+    same(SENT, spoken($bench->press('1')));
+    same(1, count($bench->api->texts()));
+});
+
+test('allow list and key: a request needs both', function (): void {
+    foreach ([null, '', 'wrong', Bench::KEY . 'x'] as $key) {
+        $bench = new Bench(ALLOWED);
+        $bench->ip = '64.113.255.88';
+        $answer = $bench->call(['key' => $key]);
+        same(403, $answer->status, var_export($key, true));
+        same('Access denied.', spoken($answer));
+        ok(hangsUp($answer), 'hung up');
+        same(0, count($bench->api->requests), 'no API call');
+        same([], $bench->calls(), 'no call state');
+        // The log tells the two reasons apart.
+        contains('WARNING [-] Request rejected: the key in the URL is missing or wrong {"ip":"64.113.255.88"}', $bench->log());
+        lacks('IP_ALLOW_LIST', $bench->log(), 'log');
+    }
+});
+
+test('allow list without WEBRESPONDER_KEY: the address is all that is asked for', function (): void {
+    foreach ([null, '', 'whatever', Bench::KEY] as $key) {
+        $bench = new Bench(['WEBRESPONDER_KEY' => ''] + ALLOWED);
+        $bench->ip = '64.113.255.201';
+        $menu = $bench->call(['key' => $key]);
+        same(200, $menu->status, var_export($key, true));
+        contains('To receive a text message at the number you are calling from', spoken($menu));
+        same(SENT, spoken($bench->press('1')));
+        same(1, count($bench->api->texts()));
+        lacks('Request rejected', $bench->log(), 'log');
+
+        // No key does not mean open: another address is refused, whatever it sends.
+        $bench->ip = '203.0.113.9';
+        $refused = $bench->call(['key' => $key]);
+        same(403, $refused->status);
+        same('Access denied.', spoken($refused));
+        same(1, count($bench->calls()), 'no second call state');
+        same(1, count($bench->api->texts()));
+    }
+});
+
+test('allow list: the installation check and every other kind of request are for those addresses only', function (): void {
+    $bench = new Bench(ALLOWED);
+    $check = ['key' => Bench::KEY, 'check' => '1'];
+
+    foreach ([$bench->send($check), $bench->send($check, [], 'POST'), $bench->call([], 'PUT'), $bench->call([], 'OPTIONS'), $bench->send([])] as $answer) {
+        same(403, $answer->status);
+        same('Access denied.', spoken($answer));
+        same([], array_diff_key($answer->headers, ['Content-Type' => '', 'Cache-Control' => '']), 'no header that tells what is served here');
+    }
+    lacks('Installation check requested', $bench->log(), 'log');
+    same(5, substr_count($bench->log(), 'Request rejected: this address is not on IP_ALLOW_LIST {"ip":"203.0.113.9"}'));
+
+    $bench->ip = '64.113.255.88';
+    $report = $bench->send($check);
+    same(200, $report->status);
+    contains(' installation check', $report->body);
+    same(405, $bench->call([], 'PUT')->status, 'on the list: the usual answer');
+    same(403, $bench->send(['check' => '1'])->status, 'the installation check still needs the key');
+
+    // Without a key in .env the installation check needs none either.
+    $listOnly = new Bench(['WEBRESPONDER_KEY' => ''] + ALLOWED);
+    same(403, $listOnly->send(['check' => '1'])->status);
+    $listOnly->ip = '64.113.255.88';
+    $report = $listOnly->send(['check' => '1']);
+    same(200, $report->status);
+    contains(' installation check', $report->body);
 });
 
 test('only GET and POST are served', function (): void {

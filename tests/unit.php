@@ -14,6 +14,7 @@ use AAtoSMS\CallStore;
 use AAtoSMS\CallStoreException;
 use AAtoSMS\Config;
 use AAtoSMS\ConfigException;
+use AAtoSMS\IpList;
 use AAtoSMS\Logger;
 use AAtoSMS\NetSapiens;
 use AAtoSMS\PhoneNumber;
@@ -209,6 +210,7 @@ test('config: only three values are required, the rest has defaults', function (
     same(10, $config->apiTimeout);
     same('', $config->apiCaFile);
     same('', $config->defaultDomain);
+    same('', $config->ipAllowList, 'no list: requests may come from any address');
     same('', $config->appUrl);
     same('2', $config->smsOption);
     same('', $config->smsUser);
@@ -346,6 +348,48 @@ test('config: individual rules', function (): void {
     // Plain http is tolerated for a test API on this machine only.
     same('http://127.0.0.1:8080/ns-api/v2', Config::fromArray(['NS_API_URL' => 'http://127.0.0.1:8080/ns-api/v2'] + REQUIRED, '/x')->apiUrl);
     same('http://localhost/ns-api/v2', Config::fromArray(['NS_API_URL' => 'http://localhost/ns-api/v2'] + REQUIRED, '/x')->apiUrl);
+});
+
+test('config: IP_ALLOW_LIST takes addresses and blocks; with it, the key may be left out', function (): void {
+    $config = Config::fromArray(['IP_ALLOW_LIST' => '  64.113.255.88, 64.113.255.0/24  '] + REQUIRED, '/srv/aatosms');
+    same('64.113.255.88, 64.113.255.0/24', $config->ipAllowList);
+    same(REQUIRED['WEBRESPONDER_KEY'], $config->responderKey, 'with a key as well, both are asked for');
+
+    // The key is what keeps strangers out. It may only go when the list does that.
+    $withoutKey = ['WEBRESPONDER_KEY' => ''] + REQUIRED;
+    $listOnly = Config::fromArray(['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/24'] + $withoutKey, '/srv/aatosms');
+    same(['', '64.113.255.88, 64.113.255.0/24'], [$listOnly->responderKey, $listOnly->ipAllowList]);
+    same('2001:db8::/48', Config::fromArray(['IP_ALLOW_LIST' => '2001:db8::/48'] + $withoutKey, '/srv/aatosms')->ipAllowList);
+
+    $message = static fn (array $values): string => throws(ConfigException::class, static fn () => Config::fromArray($values, '/srv/aatosms'))->getMessage();
+    $neither = 'Invalid configuration: WEBRESPONDER_KEY is required and must be at least 24 characters long. It may only be left blank when IP_ALLOW_LIST is set.';
+    same($neither, $message($withoutKey));
+    same($neither, $message(['IP_ALLOW_LIST' => '  '] + $withoutKey));
+    $withoutName = REQUIRED;
+    unset($withoutName['WEBRESPONDER_KEY']);
+    same($neither, $message($withoutName));
+
+    // A key that is there has to be a good one, list or no list.
+    same('Invalid configuration: WEBRESPONDER_KEY must be at least 24 characters long.', $message(['WEBRESPONDER_KEY' => 'short', 'IP_ALLOW_LIST' => '64.113.255.88'] + REQUIRED));
+    same('Invalid configuration: WEBRESPONDER_KEY must be at least 24 characters long.', $message(['WEBRESPONDER_KEY' => 'short'] + REQUIRED));
+
+    // A list that cannot be read is never a reason to let requests in: nothing starts.
+    $unreadable = 'Invalid configuration: IP_ALLOW_LIST: "64.113.255.0/33" is not an IP address or a block of addresses. '
+        . 'Write addresses like 64.113.255.88 and blocks like 64.113.255.0/24, separated by commas.';
+    same($unreadable, $message(['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/33'] + REQUIRED));
+    same($unreadable, $message(['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/33'] + $withoutKey));
+    same(
+        'Invalid configuration: IP_ALLOW_LIST: 0.0.0.0/0 stands for every address there is. To accept requests from any address, leave IP_ALLOW_LIST blank.',
+        $message(['IP_ALLOW_LIST' => '0.0.0.0/0'] + $withoutKey)
+    );
+    same('Invalid configuration: IP_ALLOW_LIST contains no address.', $message(['IP_ALLOW_LIST' => ','] + $withoutKey));
+    contains('IP_ALLOW_LIST: "pbx.example.test" is not an IP address', $message(['IP_ALLOW_LIST' => 'pbx.example.test'] + REQUIRED));
+
+    // Together with the other problems, in the one message.
+    $all = $message(['IP_ALLOW_LIST' => '10.0.0.0/8, 64.113.255', 'WEBRESPONDER_KEY' => 'short', 'LOG_LEVEL' => 'verbose'] + REQUIRED);
+    contains('IP_ALLOW_LIST: "64.113.255" is not an IP address', $all);
+    contains('WEBRESPONDER_KEY must be at least 24', $all);
+    contains('LOG_LEVEL', $all);
 });
 
 test('config: secrets do not show up in dumps', function (): void {
@@ -683,6 +727,205 @@ test('repeat: yes is true, no or nothing is false, anything else is null', funct
         same(null, $repeat([], ['repeat' => $value]), var_export($value, true));
     }
     same(false, $repeat([], ['repeat' => ['yes']]), 'a list is not a value');
+});
+
+// ---------------------------------------------------------------------------
+// Addresses that requests may come from (IP_ALLOW_LIST)
+// ---------------------------------------------------------------------------
+
+/** Which of the addresses are on the list: address => true or false. */
+function onList(IpList $list, array $addresses): array
+{
+    return array_combine($addresses, array_map($list->contains(...), $addresses));
+}
+
+test('ip list: single addresses and blocks, as in "64.113.255.88, 64.113.255.0/24"', function (): void {
+    $list = new IpList('64.113.255.88, 64.113.255.0/24');
+    same(false, $list->isEmpty());
+    same([], $list->problems());
+    same([], $list->remarks());
+    same(['64.113.255.88', '64.113.255.0/24 (64.113.255.0 to 64.113.255.255)'], $list->describe());
+
+    $in = ['64.113.255.88', '64.113.255.0', '64.113.255.1', '64.113.255.87', '64.113.255.89', '64.113.255.254', '64.113.255.255'];
+    same(array_fill_keys($in, true), onList($list, $in), 'the address, and the block from its first to its last address');
+    $out = ['64.113.254.255', '64.114.0.0', '64.113.0.88', '64.112.255.88', '65.113.255.88', '164.113.255.88', '64.113.25.5', '0.0.0.0', '255.255.255.255', '127.0.0.1', '10.0.0.1'];
+    same(array_fill_keys($out, false), onList($list, $out), 'everything else');
+
+    // One address is that address and no other.
+    $one = new IpList('64.113.255.88');
+    same(['64.113.255.88'], $one->describe());
+    same(
+        ['64.113.255.88' => true, '64.113.255.87' => false, '64.113.255.89' => false, '64.113.255.0' => false, '64.113.254.88' => false, '64.113.255.8' => false],
+        onList($one, ['64.113.255.88', '64.113.255.87', '64.113.255.89', '64.113.255.0', '64.113.254.88', '64.113.255.8'])
+    );
+    same(['64.113.255.88'], (new IpList('64.113.255.88/32'))->describe(), '/32 is one address');
+});
+
+test('ip list: a block ends exactly where its bits end', function (): void {
+    // [entry, how it is described, addresses in it, addresses just outside]
+    $blocks = [
+        ['10.1.2.128/25', '10.1.2.128/25 (10.1.2.128 to 10.1.2.255)', ['10.1.2.128', '10.1.2.200', '10.1.2.255'], ['10.1.2.127', '10.1.3.0', '10.1.1.255', '10.1.2.0']],
+        ['10.1.2.4/30', '10.1.2.4/30 (10.1.2.4 to 10.1.2.7)', ['10.1.2.4', '10.1.2.5', '10.1.2.6', '10.1.2.7'], ['10.1.2.3', '10.1.2.8']],
+        ['10.1.2.6/31', '10.1.2.6/31 (10.1.2.6 to 10.1.2.7)', ['10.1.2.6', '10.1.2.7'], ['10.1.2.5', '10.1.2.8']],
+        ['64.113.254.0/23', '64.113.254.0/23 (64.113.254.0 to 64.113.255.255)', ['64.113.254.0', '64.113.254.255', '64.113.255.0', '64.113.255.255'], ['64.113.253.255', '64.114.0.0']],
+        ['172.16.0.0/12', '172.16.0.0/12 (172.16.0.0 to 172.31.255.255)', ['172.16.0.0', '172.20.1.1', '172.31.255.255'], ['172.15.255.255', '172.32.0.0']],
+        ['10.0.0.0/8', '10.0.0.0/8 (10.0.0.0 to 10.255.255.255)', ['10.0.0.0', '10.255.255.255'], ['9.255.255.255', '11.0.0.0']],
+        ['128.0.0.0/1', '128.0.0.0/1 (128.0.0.0 to 255.255.255.255)', ['128.0.0.0', '255.255.255.255'], ['127.255.255.255', '0.0.0.0']],
+        ['2001:db8:1::/48', '2001:db8:1::/48 (2001:db8:1:: to 2001:db8:1:ffff:ffff:ffff:ffff:ffff)', ['2001:db8:1::', '2001:db8:1:ffff:ffff:ffff:ffff:ffff', '2001:DB8:1::5'], ['2001:db8:0:ffff:ffff:ffff:ffff:ffff', '2001:db8:2::']],
+        ['2001:db8::8/125', '2001:db8::8/125 (2001:db8::8 to 2001:db8::f)', ['2001:db8::8', '2001:db8::f'], ['2001:db8::7', '2001:db8::10']],
+    ];
+    foreach ($blocks as [$entry, $described, $in, $out]) {
+        $list = new IpList($entry);
+        same([[], [], [$described]], [$list->problems(), $list->remarks(), $list->describe()], $entry);
+        same(array_fill_keys($in, true) + array_fill_keys($out, false), onList($list, array_merge($in, $out)), $entry);
+    }
+});
+
+test('ip list: IPv6 addresses; an IPv4 address that is written as IPv6 is that IPv4 address', function (): void {
+    $list = new IpList('2001:db8:2::7, ::1, fe80::1, 64.113.255.0/24');
+    same(['2001:db8:2::7', '::1', 'fe80::1', '64.113.255.0/24 (64.113.255.0 to 64.113.255.255)'], $list->describe());
+    same(
+        [
+            '2001:db8:2::7' => true,
+            '2001:0db8:0002:0000:0000:0000:0000:0007' => true, // the same address written in full
+            '2001:DB8:2::7' => true,
+            '2001:db8:2::8' => false,
+            '2001:db8:2::' => false,
+            '::1' => true,
+            '::2' => false,
+            '::' => false,
+            '127.0.0.1' => false, // the IPv4 address of this computer is not ::1
+            'fe80::1%eth0' => true, // what follows the % names a network card
+            'fe80::1%12' => true,
+            'fe80::2%eth0' => false,
+            // What a web server that listens on IPv6 reports for an IPv4 caller.
+            '::ffff:64.113.255.7' => true,
+            '::FFFF:64.113.255.7' => true,
+            '::ffff:4071:ff07' => true, // the same, with the IPv4 part in hex
+            '::ffff:64.113.254.7' => false,
+            '::64.113.255.7' => false, // not that form: another address
+        ],
+        onList($list, [
+            '2001:db8:2::7', '2001:0db8:0002:0000:0000:0000:0000:0007', '2001:DB8:2::7', '2001:db8:2::8', '2001:db8:2::', '::1', '::2', '::', '127.0.0.1',
+            'fe80::1%eth0', 'fe80::1%12', 'fe80::2%eth0', '::ffff:64.113.255.7', '::FFFF:64.113.255.7', '::ffff:4071:ff07', '::ffff:64.113.254.7', '::64.113.255.7',
+        ])
+    );
+
+    // The other way round: an entry in that form is an IPv4 entry.
+    $mapped = new IpList('::ffff:64.113.255.88 ::ffff:10.1.2.0/120');
+    same(['64.113.255.88', '10.1.2.0/24 (10.1.2.0 to 10.1.2.255)'], $mapped->describe());
+    same(['64.113.255.88' => true, '10.1.2.200' => true, '10.1.3.0' => false, '::ffff:10.1.2.9' => true], onList($mapped, ['64.113.255.88', '10.1.2.200', '10.1.3.0', '::ffff:10.1.2.9']));
+    same(['64.113.255.88'], (new IpList('::ffff:64.113.255.88/128'))->describe());
+    same(['128.0.0.0/1 (128.0.0.0 to 255.255.255.255)'], (new IpList('::ffff:128.0.0.0/97'))->describe());
+
+    // A larger IPv6 block that begins like that is an IPv6 block, and holds no IPv4 address.
+    $wide = new IpList('::ffff:0:0/64');
+    same([[], ['::/64 (:: to ::ffff:ffff:ffff:ffff)']], [$wide->problems(), $wide->describe()]);
+    same(
+        ['::5' => true, '::1:0:0:0:0' => false, '1.2.3.4' => false, '0.0.0.0' => false, '::ffff:1.2.3.4' => false],
+        onList($wide, ['::5', '::1:0:0:0:0', '1.2.3.4', '0.0.0.0', '::ffff:1.2.3.4'])
+    );
+});
+
+test('ip list: commas, semicolons, spaces and line breaks separate; entries may repeat', function (): void {
+    $expected = ['64.113.255.88', '64.113.255.0/24 (64.113.255.0 to 64.113.255.255)'];
+    $texts = [
+        '64.113.255.88,64.113.255.0/24', '64.113.255.88 64.113.255.0/24', '64.113.255.88;64.113.255.0/24', " 64.113.255.88 ,\t64.113.255.0/24 , ",
+        "64.113.255.88\r\n64.113.255.0/24\n", ',64.113.255.88,,;64.113.255.0/24;',
+        "64.113.255.88,\u{A0}64.113.255.0/24\u{A0}", // spaces that do not break a line, as in a list copied from a web page
+    ];
+    foreach ($texts as $text) {
+        $list = new IpList($text);
+        same([$expected, []], [$list->describe(), $list->problems()], var_export($text, true));
+    }
+    same(['10.0.0.1', '10.0.0.0/24 (10.0.0.0 to 10.0.0.255)'], (new IpList('10.0.0.1, 10.0.0.1, 10.0.0.1/32, 10.0.0.0/24, 10.0.0.0/24'))->describe(), 'an entry that repeats is listed once');
+});
+
+test('ip list: an empty list contains no address', function (): void {
+    foreach (['', '   ', "\t"] as $text) {
+        $list = new IpList($text);
+        same([true, [], [], []], [$list->isEmpty(), $list->problems(), $list->remarks(), $list->describe()], var_export($text, true));
+        same(['64.113.255.88' => false, '127.0.0.1' => false, '::1' => false, '' => false], onList($list, ['64.113.255.88', '127.0.0.1', '::1', '']));
+    }
+    // Only separators: somebody meant to write a list.
+    foreach ([',', ' , ; ', ';;'] as $text) {
+        $list = new IpList($text);
+        same([true, ['IP_ALLOW_LIST contains no address.']], [$list->isEmpty(), $list->problems()], var_export($text, true));
+    }
+});
+
+test('ip list: what is neither an address nor a block is reported, and is no part of the list', function (): void {
+    $unreadable = [
+        '64.113.255', '64.113.255.256', '64.113.255.88.1', '64.113.255.*', '64.113.255.', '.64.113.255.88', '64..113.255.88',
+        '64.113.255.0/33', '64.113.255.0/-1', '64.113.255.0/', '64.113.255.0/24/8', '64.113.255.0/a', '64.113.255.0/08', '64.113.255.0/2.4', '/24',
+        '064.113.255.088', '01.2.3.4', '10.01.2.3', '10.1.2.03', '0x40.113.255.88', '64.113.255.10-64.113.255.20', '64.113.255.0/255.255.255.0', '64.113.255.88:5060', '1089601368',
+        'pbx.example.com', 'localhost', 'any', '*', '#',
+        '::1/129', '2001:db8::/-1', '2001:db8:::1', '12345::1', '2001:db8::g', '[::1]', ':', '1:2:3:4:5:6:7', '1:2:3:4:5:6:7:8:9',
+    ];
+    foreach ($unreadable as $entry) {
+        $list = new IpList($entry);
+        same(
+            ['IP_ALLOW_LIST: "' . $entry . '" is not an IP address or a block of addresses. Write addresses like 64.113.255.88 and blocks like 64.113.255.0/24, separated by commas.'],
+            $list->problems(),
+            $entry
+        );
+        same([true, []], [$list->isEmpty(), $list->describe()], $entry);
+        same(['64.113.255.88' => false, '64.113.255.0' => false, '0.0.0.0' => false, '::1' => false], onList($list, ['64.113.255.88', '64.113.255.0', '0.0.0.0', '::1']), $entry);
+    }
+
+    // Every such entry is named, in one sentence.
+    $mixed = new IpList('64.113.255.88, nonsense, 64.113.255.0/33, 10.0.0.0/8');
+    same(
+        ['IP_ALLOW_LIST: "nonsense", "64.113.255.0/33" are not an IP address or a block of addresses. Write addresses like 64.113.255.88 and blocks like 64.113.255.0/24, separated by commas.'],
+        $mixed->problems()
+    );
+
+    // A comment after the value is not understood either (the .env format has none).
+    same(1, count((new IpList('64.113.255.88 # the PBX'))->problems()));
+});
+
+test('ip list: a block that is every address is refused - a blank list says that', function (): void {
+    foreach (['0.0.0.0/0', '64.113.255.88/0', '::/0', '2001:db8::/0', '::ffff:0.0.0.0/96'] as $entry) {
+        $list = new IpList($entry);
+        same(['IP_ALLOW_LIST: ' . $entry . ' stands for every address there is. To accept requests from any address, leave IP_ALLOW_LIST blank.'], $list->problems(), $entry);
+        same([true, false, false], [$list->isEmpty(), $list->contains('64.113.255.88'), $list->contains('::1')], $entry);
+    }
+    $both = new IpList('0.0.0.0/0, what');
+    same(2, count($both->problems()));
+    contains('"what" is not an IP address', $both->problems()[0]);
+    contains('0.0.0.0/0 stands for every address', $both->problems()[1]);
+
+    // Half of all addresses is a block like any other: the installation check shows how large it is.
+    same(['0.0.0.0/1 (0.0.0.0 to 127.255.255.255)'], (new IpList('0.0.0.0/1'))->describe());
+});
+
+test('ip list: an address inside a block where the first address belongs is read as the block, with a remark', function (): void {
+    $list = new IpList('64.113.255.88/24, 10.1.2.3/30 2001:db8::5/64');
+    same([], $list->problems());
+    same(
+        ['64.113.255.0/24 (64.113.255.0 to 64.113.255.255)', '10.1.2.0/30 (10.1.2.0 to 10.1.2.3)', '2001:db8::/64 (2001:db8:: to 2001:db8::ffff:ffff:ffff:ffff)'],
+        $list->describe()
+    );
+    same(
+        [
+            ['64.113.255.88/24 is read as the block 64.113.255.0/24 (64.113.255.0 to 64.113.255.255).', 'For that one address, write 64.113.255.88.'],
+            ['10.1.2.3/30 is read as the block 10.1.2.0/30 (10.1.2.0 to 10.1.2.3).', 'For that one address, write 10.1.2.3.'],
+            ['2001:db8::5/64 is read as the block 2001:db8::/64 (2001:db8:: to 2001:db8::ffff:ffff:ffff:ffff).', 'For that one address, write 2001:db8::5.'],
+        ],
+        $list->remarks()
+    );
+    same(['64.113.255.1' => true, '64.113.255.255' => true, '64.113.254.88' => false, '10.1.2.0' => true, '10.1.2.4' => false], onList($list, ['64.113.255.1', '64.113.255.255', '64.113.254.88', '10.1.2.0', '10.1.2.4']));
+
+    same([], (new IpList('64.113.255.0/24, 64.113.255.88, 64.113.255.88/32, 10.1.2.128/25, 2001:db8::/64'))->remarks(), 'nothing to remark');
+});
+
+test('ip list: an address that cannot be read is not on the list', function (): void {
+    $list = new IpList('64.113.255.88, 64.113.255.0/24, 10.0.0.0/8, ::1');
+    $unreadable = [
+        '', ' ', 'unknown', '64.113.255', '64.113.255.88:5060', '064.113.255.088', '64.113.255.88, 203.0.113.9', '203.0.113.9, 64.113.255.88',
+        '64.113.255.88/24', '10.0.0', '[::1]', "64.113.255.88\0", ' 64.113.255.88', '64.113.255.88 ', "10.1.2.3\n", '%', '%eth0', ' ::1',
+    ];
+    same(array_fill_keys($unreadable, false), onList($list, $unreadable));
 });
 
 // ---------------------------------------------------------------------------

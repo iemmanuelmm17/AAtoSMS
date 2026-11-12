@@ -114,6 +114,9 @@ Fill in the three required values:
 
 Everything else has a working default. `.env.example` explains every setting.
 
+To accept requests from the servers of the PBX only, also fill in `IP_ALLOW_LIST`: see
+[Accepting requests from the PBX only](#accepting-requests-from-the-pbx-only).
+
 `.env` does not have to stay in the project folder: see
 [Keeping `.env` in another folder](#keeping-env-in-another-folder).
 
@@ -189,6 +192,10 @@ https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&check=1&AccountD
 It shows the same report as step 3, but produced by the PHP of the web server, which
 often has another `php.ini` and runs under another Windows account. Fix everything
 marked `[FAIL]`. This page never sends a text.
+
+With `IP_ALLOW_LIST` set, this page answers "Access denied" unless the computer with the
+browser is on the list. Under "Web server" the report shows the address that your
+request came from.
 
 ### Keeping `.env` in another folder
 
@@ -271,7 +278,7 @@ Parameters you can add to the address:
 
 | Parameter | Meaning | Example |
 | --- | --- | --- |
-| `key` | **Required.** The value of `WEBRESPONDER_KEY`. | |
+| `key` | **Required.** The value of `WEBRESPONDER_KEY`. Not needed when `.env` has no `WEBRESPONDER_KEY`, which is possible with an [`IP_ALLOW_LIST`](#accepting-requests-from-the-pbx-only). | |
 | `SMSNumber` | Number the text is sent from. Blank or absent: the dialed number (`NmsDnis`). | `SMSNumber=8457747000` |
 | `option` | Auto attendant key whose message is the text: `0` to `9` (or `*`). Blank or absent: `SMS_SCRIPT_OPTION` in `.env`, which is `2` unless you change it. A value that is not a key ends the call with the apology. `SMSOption`, the first name of this parameter, still works. | `option=5` |
 | `SMSUser` | User the text is sent as: the user that owns the SMS number. | `SMSUser=7003` |
@@ -336,10 +343,57 @@ to be changed:
 | `CALLER_ID_DIGIT_STYLE` | `words` | How numbers are read back: `words`, `commas`, `hyphens` or `spaces` |
 | `TTS_VOICE`, `TTS_LANGUAGE` | blank | Voice and language of the prompts; blank = the defaults of the PBX |
 | `MAX_ATTEMPTS` | `3` | How often a prompt is played before the call ends |
+| `IP_ALLOW_LIST` | blank | Addresses that requests may come from: single addresses and blocks, e.g. `64.113.255.88, 64.113.255.0/24`. Blank = any address. See [below](#accepting-requests-from-the-pbx-only). |
 | `APP_URL` | blank | Public address of the application: the folder with `index.php`, or `index.php` itself, as in the To-Web URL. Set it if the keys a caller presses seem to be ignored. |
 | `NS_DEFAULT_DOMAIN` | blank | Domain to use when the PBX does not send `AccountDomain` |
 | `LOG_LEVEL` | `info` | `debug` also logs every request and every XML answer |
 | `PROMPT_...` | | The wording of every prompt; `{number}` is replaced by the phone number |
+
+### Accepting requests from the PBX only
+
+`IP_ALLOW_LIST` names the addresses that requests may come from. A request from any
+other address is refused, whatever it carries:
+
+```
+IP_ALLOW_LIST=64.113.255.88, 64.113.255.0/24
+```
+
+- An entry is one address (`64.113.255.88`) or a block of addresses
+  (`64.113.255.0/24`, which is `64.113.255.0` to `64.113.255.255`). Separate the entries
+  with commas; spaces do not matter. IPv6 is written the same way (`2001:db8:1::/48`).
+- Blank, as it is in `.env.example`: requests are accepted from any address.
+- **Which addresses:** the ones the PBX sends its requests from. The log shows them:
+  every `Call started` line ends with `"ip"`, the address that call came from. Make a
+  call before you set the list, and list every server of the PBX that can handle a call.
+- The list counts for every request: the start of a call, the keys a caller presses, and
+  the installation check in the browser (step 5). To use that page, add the address of
+  your own computer to the list, or run `php bin\check.php` on the server, which the list
+  does not affect. Its report shows the list as the application understands it, with the
+  first and last address of every block.
+- A refused request gets HTTP 403 and leaves a line in the log that names its address:
+  `Request rejected: this address is not on IP_ALLOW_LIST {"ip":"203.0.113.9"}`.
+- An entry that is not an address or a block makes the settings invalid, and no call is
+  served until it is corrected. The check and the log name the entry.
+
+**The list and the key.** With both `IP_ALLOW_LIST` and `WEBRESPONDER_KEY` in `.env`, a
+request needs both: it has to come from a listed address and carry `key=`. That is the
+safer setup. With a list, `WEBRESPONDER_KEY` may also be left blank; the To-Web URL then
+needs no `key=`, and the address is all that is checked:
+
+```
+https://your-server/aatosms/index.php?SMSNumber=8457747000
+```
+
+Without the key, the application serves every request that comes from a listed server,
+whoever caused it. If other people can create dial translations on that PBX (other
+customers or resellers of a hosted platform), a dial translation of theirs can name your
+address. Keep the key in that case.
+
+The address that is compared is the one the web server reports to PHP (`REMOTE_ADDR`).
+If the web server is behind a proxy or a load balancer, that is the address of the
+proxy for every request, and the list cannot tell the PBX from anybody else; restrict
+access on the proxy instead. Headers such as `X-Forwarded-For` are not used, because the
+sender of a request can put anything in them.
 
 ## Logs and troubleshooting
 
@@ -358,7 +412,8 @@ With `repeat=yes` a third line follows:
 ```
 
 The value in brackets identifies the call. The same value is in every XML answer
-(`<!-- AAtoSMS 1.2.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+(`<!-- AAtoSMS 1.3.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+The `Call started` line ends with `"ip"`, the address the request came from.
 The API token, the key and the call ids are never written to the log.
 
 | What happens | Look for | Usual cause |
@@ -367,6 +422,7 @@ The API token, the key and the call ids are never written to the log.
 | The check says that the cURL extension is not loaded | The lines below that message | `extension=curl` is missing in `php.ini`, or PHP cannot load `php_curl.dll`. On Windows the usual cause is a mix of two PHP downloads: `php.exe` from the "Non Thread Safe" one and the `ext` folder from the "Thread Safe" one, or the other way round. `php -v` then starts with warnings that end in "These options need to match". The check names both builds and the PHP to use |
 | Every address of the application gives HTTP 500 (IIS: 500.19) | The error page or the Apache error log names `web.config` or `.htaccess` | The web server does not accept a safety-net file of this project (see [Security](#security)). Delete it: `web.config` on IIS, the `.htaccess` files on Apache. They are not needed when only `public` is served |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
+| The same, or a browser shows "Access denied" for the check of step 5 | `Request rejected: this address is not on IP_ALLOW_LIST` with the address in `"ip"` | The request came from an address that `IP_ALLOW_LIST` does not name. If the address in the line is a server of the PBX (or, for the check, your own computer), add it to the list. If the line shows the same address wherever the request comes from, the web server is behind a proxy: see [Accepting requests from the PBX only](#accepting-requests-from-the-pbx-only) |
 | The caller hears the apology right away, on every call | `Request failed: ...` in `var\logs` of the project folder | The settings cannot be read. The line says why: `.env` is not there, a value in it is wrong, or `env-path.txt` names a place without `.env` or one that the web server account cannot read. `php bin\check.php` shows the same message |
 | The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = the key has no text (key 2, or the one named by `option`); "option ... is not an auto attendant key"; "SMSNumber ... not a valid 10-digit number" |
 | The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back. `APP_URL` blank: set it. `APP_URL` set: it is wrong (step 5 warns when its path does not fit) |
@@ -385,7 +441,11 @@ For a closer look set `LOG_LEVEL=debug`, make one call, and set it back.
 
 - The address works only with the right `key`. Treat the To-Web address like a password,
   and use HTTPS so it is not sent in the clear. Web server access logs contain it too.
-- If possible, let only the NetSapiens core servers reach the address (firewall).
+- Let only the NetSapiens core servers use the address: name their addresses in
+  `IP_ALLOW_LIST` ([Accepting requests from the PBX only](#accepting-requests-from-the-pbx-only)).
+  A firewall rule that does the same is better still, because a request that it stops
+  never reaches the web server. With a list, a key that leaks is of no use from anywhere
+  else.
 - A caller can type any number, so the application limits how many texts one number can
   receive (`SMS_LIMIT_PER_DESTINATION`, default 3 per hour). Texts that could not be
   sent do not count.
@@ -421,7 +481,7 @@ PHP 8.2, 8.4 and 8.5.
 
 ```
 public/index.php     the only file served to the PBX
-src/                 the application (App, CallFlow, CallPlan, NetSapiens, AutoAttendant, ...)
+src/                 the application (App, CallFlow, CallPlan, NetSapiens, AutoAttendant, IpList, ...)
 bin/check.php        installation check for the command line
 tests/               tests (run.php, http.php) and their stand-ins for the API
 var/                 logs, call state and send records (created at run time, private)

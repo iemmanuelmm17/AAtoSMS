@@ -327,6 +327,10 @@ final class Bench
     public FakeApi $api;
     public App $app;
     public ?Response $last = null;
+
+    /** The address that the requests of the phone come from. */
+    public string $ip = '203.0.113.9';
+
     private string $path;
 
     /**
@@ -410,8 +414,8 @@ final class Bench
     public function send(array $parameters, array $query = [], string $method = 'GET'): Response
     {
         $request = $method === 'POST'
-            ? new Request($parameters, $query, 'POST', '203.0.113.9', $this->path)
-            : new Request([], $parameters + $query, $method, '203.0.113.9', $this->path);
+            ? new Request($parameters, $query, 'POST', $this->ip, $this->path)
+            : new Request([], $parameters + $query, $method, $this->ip, $this->path);
 
         return $this->app->handle($request);
     }

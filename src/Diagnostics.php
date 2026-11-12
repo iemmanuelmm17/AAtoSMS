@@ -68,7 +68,7 @@ final class Diagnostics
         $this->checkPhp();
         $this->webPath = $request->path;
         if ($this->webPath !== '') {
-            $this->checkWebAddress($this->webPath);
+            $this->checkWebAddress($this->webPath, $request->ip);
         }
         if ($this->checkSettings()) {
             $this->checkStorage();
@@ -116,21 +116,25 @@ final class Diagnostics
     /**
      * Only public/ is meant to be served. An address that goes through ".../public/"
      * shows that the project folder itself (with .env and var/) is inside the web site.
+     *
+     * @param string $ip the address this request came from, which is what IP_ALLOW_LIST is compared with
      */
-    private function checkWebAddress(string $path): void
+    private function checkWebAddress(string $path, string $ip): void
     {
         $this->section('Web server');
         if (preg_match('~\A(.*)/public/[^/]*\z~i', $path, $match) !== 1) {
             $this->ok('this page was reached as ' . $path);
-
-            return;
+        } else {
+            $this->warn(sprintf('This page was reached as %s. The "public" in the address means that the whole', $path));
+            $this->note('project folder is probably reachable from the web, private files included.');
+            $this->note(sprintf('Test it: open %s/.env.example in this browser. An error page is the right answer.', $match[1]));
+            $this->note('If the file is shown, make the web server serve only the "public" folder (README, "Web server").');
+            $this->note('If that cannot be done, keep .env and the "var" folder somewhere else: see env-path.example.txt');
+            $this->note('and STORAGE_PATH in .env.');
         }
-        $this->warn(sprintf('This page was reached as %s. The "public" in the address means that the whole', $path));
-        $this->note('project folder is probably reachable from the web, private files included.');
-        $this->note(sprintf('Test it: open %s/.env.example in this browser. An error page is the right answer.', $match[1]));
-        $this->note('If the file is shown, make the web server serve only the "public" folder (README, "Web server").');
-        $this->note('If that cannot be done, keep .env and the "var" folder somewhere else: see env-path.example.txt');
-        $this->note('and STORAGE_PATH in .env.');
+        if ($ip !== '') {
+            $this->note('Your address, as this server sees it: ' . $ip);
+        }
     }
 
     private function checkSettings(): bool
@@ -157,6 +161,13 @@ final class Diagnostics
             $this->ok('settings are valid');
         }
         $this->note('API ................. ' . $config->apiUrl);
+        $allowList = new IpList($config->ipAllowList);
+        $this->note('Access .............. '
+            . ($config->responderKey !== '' ? 'with the key in the To-Web URL (key=...), ' : 'without a key, ')
+            . ($allowList->isEmpty() ? 'from any address' : 'from these addresses only:'));
+        foreach ($allowList->describe() as $entry) {
+            $this->note('                        ' . $entry);
+        }
         $this->note('Text comes from ..... auto attendant key ' . $config->smsOption);
         $this->note('Numbers sent as ..... ' . PhoneNumber::format('8452632561', $config->numberFormat) . ' (' . $config->numberFormat . ')');
         $this->note('Numbers spoken as ... ' . PhoneNumber::speak('8452632561', $config->digitStyle) . ' (' . $config->digitStyle . ')');
@@ -169,6 +180,10 @@ final class Diagnostics
 
         if ($config->unknownKeys !== []) {
             $this->warn('Names in .env that this application does not know (misspelled?): ' . implode(', ', $config->unknownKeys));
+        }
+        foreach ($allowList->remarks() as [$remark, $advice]) {
+            $this->warn('IP_ALLOW_LIST: ' . $remark);
+            $this->note($advice);
         }
         $this->checkUnusedSettingsFile($config);
         $this->checkPointerName();

@@ -11,6 +11,9 @@ namespace AAtoSMS;
  * must carry the key; it reads the auto attendant, stores the call state and
  * plays the first prompt. Every later request is the "action" of a <Gather>:
  * it carries call=<id>.<step> plus the keys the caller pressed.
+ *
+ * With IP_ALLOW_LIST in .env, every request also has to come from an address on
+ * that list. WEBRESPONDER_KEY may then be left blank, and no request needs a key.
  */
 final class App
 {
@@ -18,6 +21,9 @@ final class App
     public const CALL_TTL_SECONDS = 3600;
 
     private CallFlow $flow;
+
+    /** The addresses that requests may come from, when IP_ALLOW_LIST is set. */
+    private IpList $allowList;
 
     public function __construct(
         private Config $config,
@@ -27,6 +33,7 @@ final class App
         private RateLimiter $limiter,
     ) {
         $this->flow = new CallFlow($config, $api, $limiter, $logger);
+        $this->allowList = new IpList($config->ipAllowList);
     }
 
     /** Builds the application from the .env file of a project folder. */
@@ -106,6 +113,14 @@ final class App
 
     public function handle(Request $request): Response
     {
+        $this->logger->setCallRef(''); // which call this request belongs to is not known yet
+
+        if ($this->config->ipAllowList !== '' && !$this->allowList->contains($request->ip)) {
+            // First of all, and for every kind of request: another address gets nothing done here.
+            $this->logger->warning('Request rejected: this address is not on IP_ALLOW_LIST', ['ip' => $request->ip]);
+
+            return self::denied();
+        }
         if (!in_array($request->method, ['GET', 'POST'], true)) {
             return new Response(405, '', ['Allow' => 'GET, POST']);
         }
@@ -137,10 +152,13 @@ final class App
 
     private function startCall(Request $request, string $self): Response
     {
-        if (!hash_equals($this->config->responderKey, $request->get('key'))) {
+        // No key in .env: the addresses of IP_ALLOW_LIST are all that is asked for, and
+        // handle() has checked them. Config refuses a .env that has neither.
+        $key = $this->config->responderKey;
+        if ($key !== '' && !hash_equals($key, $request->get('key'))) {
             $this->logger->warning('Request rejected: the key in the URL is missing or wrong', ['ip' => $request->ip]);
 
-            return new Response(403, Xml::document('', Xml::say('Access denied.'), Xml::hangup()));
+            return self::denied();
         }
 
         if ($request->get('check') !== '') {
@@ -206,6 +224,7 @@ final class App
             'nms_dnis' => $request->get('NmsDnis'),
             'message_characters' => Text::length($message),
             'call_id' => $request->get('OrigCallID'),
+            'ip' => $request->ip,
         ]);
         $this->logger->debug('Answer', ['xml' => $xml]);
 
@@ -262,6 +281,12 @@ final class App
     private static function callback(string $self, string $id, int $step): string
     {
         return $self . '?call=' . $id . '.' . $step;
+    }
+
+    /** Answer to a request that may not use the application. */
+    private static function denied(): Response
+    {
+        return new Response(403, Xml::document('', Xml::say('Access denied.'), Xml::hangup()));
     }
 
     /** Answer used when the application itself is broken (no .env, PHP error). */

@@ -79,8 +79,13 @@ test('check: without call values it covers PHP, settings and storage', function 
     contains('  [ OK ] PHP ' . PHP_VERSION, $report);
     contains('  [ OK ] cURL ', $report);
     contains('  [ OK ] settings are valid', $report);
-    contains('API ................. https://pbx.example.test/ns-api/v2', $report);
-    contains('Text comes from ..... auto attendant key 2', $report);
+    contains(
+        "         API ................. https://pbx.example.test/ns-api/v2\n"
+            . "         Access .............. with the key in the To-Web URL (key=...), from any address\n"
+            . "         Text comes from ..... auto attendant key 2\n",
+        $report
+    );
+    lacks('Your address', $report, 'command line report');
     contains('Numbers sent as ..... 18452632561 (11digit)', $report);
     contains('Numbers spoken as ... eight, four, five, two, six, three, two, five, six, one (words)', $report);
     contains('Limit ............... 3 text(s) per destination per 60 minutes', $report);
@@ -135,6 +140,52 @@ test('check: option names the key whose message is shown as the text to send', f
     [$report, $problems] = check($bench, $values + ['SMSOption' => '2']);
     same(0, $problems, $report);
     contains('  [ OK ] Key 2 holds the text to send (117 characters):', $report);
+});
+
+test('check: the report says who may use the application - the key, a list of addresses, or both', function (): void {
+    [$report, $problems] = check(new Bench(['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/24']), []);
+    same(0, $problems, $report);
+    contains(
+        "         API ................. https://pbx.example.test/ns-api/v2\n"
+            . "         Access .............. with the key in the To-Web URL (key=...), from these addresses only:\n"
+            . "                                 64.113.255.88\n"
+            . "                                 64.113.255.0/24 (64.113.255.0 to 64.113.255.255)\n"
+            . "         Text comes from ..... auto attendant key 2\n",
+        $report
+    );
+    contains("\nResult: no problems found.\n", $report);
+
+    [$report, $problems] = check(new Bench(['WEBRESPONDER_KEY' => '', 'IP_ALLOW_LIST' => '2001:db8:1::/48 ; 10.20.30.40']), []);
+    same(0, $problems, $report);
+    contains(
+        "         Access .............. without a key, from these addresses only:\n"
+            . "                                 2001:db8:1::/48 (2001:db8:1:: to 2001:db8:1:ffff:ffff:ffff:ffff:ffff)\n"
+            . "                                 10.20.30.40\n"
+            . "         Text comes from ..... auto attendant key 2\n",
+        $report
+    );
+    contains("\nResult: no problems found.\n", $report);
+
+    // 64.113.255.88/24 is 256 addresses, which may not be what its writer had in mind.
+    [$report, $problems] = check(new Bench(['IP_ALLOW_LIST' => '64.113.255.88/24, 10.20.30.40, 10.1.2.3/30']), []);
+    same(0, $problems, $report);
+    contains(
+        "         Access .............. with the key in the To-Web URL (key=...), from these addresses only:\n"
+            . "                                 64.113.255.0/24 (64.113.255.0 to 64.113.255.255)\n"
+            . "                                 10.20.30.40\n"
+            . "                                 10.1.2.0/30 (10.1.2.0 to 10.1.2.3)\n"
+            . "         Text comes from ..... auto attendant key 2\n",
+        $report
+    );
+    contains(
+        "  [WARN] IP_ALLOW_LIST: 64.113.255.88/24 is read as the block 64.113.255.0/24 (64.113.255.0 to 64.113.255.255).\n"
+            . "         For that one address, write 64.113.255.88.\n"
+            . "  [WARN] IP_ALLOW_LIST: 10.1.2.3/30 is read as the block 10.1.2.0/30 (10.1.2.0 to 10.1.2.3).\n"
+            . "         For that one address, write 10.1.2.3.\n"
+            . "Storage\n",
+        $report
+    );
+    contains("\nResult: no problems, 2 warning(s).\n", $report);
 });
 
 test('check: SendTo sends one real text, from the command line only', function (): void {
@@ -348,7 +399,7 @@ test('check: reads the .env file of the project folder', function (): void {
         $invalid = new Diagnostics($folder);
         $report = $invalid->run(new Request());
         same(1, $invalid->problems());
-        contains('  [FAIL] Invalid configuration: WEBRESPONDER_KEY is required and must be at least 24 characters long.', $report);
+        contains('  [FAIL] Invalid configuration: WEBRESPONDER_KEY must be at least 24 characters long.', $report);
 
         file_put_contents($folder . '/.env', "NS_API_URL=https://pbx.example.test/ns-api/v2\r\nNS_API_TOKEN=" . Bench::TOKEN . "\r\nWEBRESPONDER_KEY=" . Bench::KEY . "\r\n");
         $valid = new Diagnostics($folder);
@@ -360,6 +411,34 @@ test('check: reads the .env file of the project folder', function (): void {
         contains('         Log ................. ' . Config::nativePath($folder . '/var/logs') . ' (info)', $report);
         lacks(Bench::TOKEN, $report, 'report');
         lacks(Bench::KEY, $report, 'report');
+
+        // The list of addresses as it is written in the file: on one line, with or without quotes.
+        $base = "NS_API_URL=https://pbx.example.test/ns-api/v2\r\nNS_API_TOKEN=" . Bench::TOKEN . "\r\n";
+        foreach (['IP_ALLOW_LIST=64.113.255.88, 64.113.255.0/24', 'IP_ALLOW_LIST = "64.113.255.88,64.113.255.0/24"', "IP_ALLOW_LIST='64.113.255.88 64.113.255.0/24'"] as $line) {
+            file_put_contents($folder . '/.env', $base . "WEBRESPONDER_KEY=\r\n" . $line . "\r\n");
+            $listed = new Diagnostics($folder);
+            $report = $listed->run(new Request());
+            same(0, $listed->problems(), $report);
+            contains(
+                "         Access .............. without a key, from these addresses only:\n"
+                    . "                                 64.113.255.88\n"
+                    . "                                 64.113.255.0/24 (64.113.255.0 to 64.113.255.255)\n",
+                $report,
+                $line
+            );
+        }
+
+        file_put_contents($folder . '/.env', $base . "WEBRESPONDER_KEY=\r\nIP_ALLOW_LIST=64.113.255.88, 64.113.255.0/24 # the PBX\r\n");
+        $commented = new Diagnostics($folder);
+        $report = $commented->run(new Request());
+        same(1, $commented->problems(), $report);
+        contains('  [FAIL] Invalid configuration: IP_ALLOW_LIST: "#", "the", "PBX" are not an IP address or a block of addresses. Write addresses like', $report);
+
+        file_put_contents($folder . '/.env', $base . "WEBRESPONDER_KEY=\r\nIP_ALLOW_LIST=\r\n");
+        $open = new Diagnostics($folder);
+        $report = $open->run(new Request());
+        same(1, $open->problems(), $report);
+        contains('  [FAIL] Invalid configuration: WEBRESPONDER_KEY is required and must be at least 24 characters long. It may only be left blank when IP_ALLOW_LIST is set.', $report);
     } finally {
         removeFolder($folder);
     }
@@ -521,12 +600,37 @@ test('check in the browser: index.php?key=...&check=1 answers with the report as
     lacks(Bench::TOKEN, $answer->body, 'report');
     lacks(Bench::KEY, $answer->body, 'report');
     contains('Installation check requested {"ip":"203.0.113.9"}', $bench->log());
-    contains("Web server\n  [ OK ] this page was reached as /aatosms/index.php\n", $answer->body);
+    // The address of the browser: what IP_ALLOW_LIST would be compared with.
+    contains("Web server\n  [ OK ] this page was reached as /aatosms/index.php\n         Your address, as this server sees it: 203.0.113.9\nSettings\n", $answer->body);
     contains("\nResult: no problems, 1 warning(s).\n", $answer->body);
 
     $denied = (new Bench())->call(['check' => '1', 'key' => 'wrong']);
     same(403, $denied->status);
     lacks('installation check', $denied->body, 'answer without the key');
+
+    // A web server that names no address: the line is left out.
+    $nameless = new Bench();
+    $nameless->ip = '';
+    $report = $nameless->call(['check' => '1'])->body;
+    contains("Web server\n  [ OK ] this page was reached as /aatosms/index.php\nSettings\n", $report);
+
+    // With a list of addresses the browser has to be on it. The report then shows the list.
+    $listed = new Bench(['IP_ALLOW_LIST' => '64.113.255.88, 64.113.255.0/24, 2001:db8::/32']);
+    $denied = $listed->call(['check' => '1']);
+    same(403, $denied->status);
+    lacks('installation check', $denied->body, 'answer to an address that is not on the list');
+    $listed->ip = '2001:db8::7';
+    $answer = $listed->call(['check' => '1']);
+    same(200, $answer->status);
+    contains("\n         Your address, as this server sees it: 2001:db8::7\nSettings\n", $answer->body);
+    contains(
+        "         Access .............. with the key in the To-Web URL (key=...), from these addresses only:\n"
+            . "                                 64.113.255.88\n"
+            . "                                 64.113.255.0/24 (64.113.255.0 to 64.113.255.255)\n"
+            . "                                 2001:db8::/32 (2001:db8:: to 2001:db8:ffff:ffff:ffff:ffff:ffff:ffff)\n",
+        $answer->body
+    );
+    contains("\nResult: no problems found.\n", $answer->body);
 });
 
 test('check in the browser: warns when the address shows that the whole project folder is served', function (): void {
@@ -537,7 +641,9 @@ test('check in the browser: warns when the address shows that the whole project 
     contains(
         "         If the file is shown, make the web server serve only the \"public\" folder (README, \"Web server\").\n"
             . "         If that cannot be done, keep .env and the \"var\" folder somewhere else: see env-path.example.txt\n"
-            . "         and STORAGE_PATH in .env.\n",
+            . "         and STORAGE_PATH in .env.\n"
+            . "         Your address, as this server sees it: 203.0.113.9\n"
+            . "Settings\n",
         $report
     );
     contains("\nResult: no problems, 1 warning(s).\n", $report);

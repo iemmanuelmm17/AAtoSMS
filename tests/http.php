@@ -732,6 +732,110 @@ if ($ownServers) {
 }
 
 // ---------------------------------------------------------------------------
+// Addresses that requests may come from
+// ---------------------------------------------------------------------------
+
+if ($ownServers) {
+    test('http: IP_ALLOW_LIST - other addresses are refused; a listed address is served, without a key when .env has none', function () use (&$servers, $folder, $apiPort, $api, $texts): void {
+        // A project folder of its own, with the application code of this checkout: its .env, its log
+        // and its call data are apart from those of the other tests. The requests come from 127.0.0.1.
+        $project = $folder . '/listed/aatosms';
+        mkdir($project . '/public', 0700, true);
+        file_put_contents(
+            $project . '/public/index.php',
+            '<?php require ' . var_export(dirname(__DIR__) . '/src/bootstrap.php', true) . '; AAtoSMS\\App::run(dirname(__DIR__));'
+        );
+        $configure = static function (string $key, string $list) use ($project, $apiPort): void {
+            file_put_contents($project . '/.env', implode("\r\n", [
+                '# written by tests/http.php',
+                'NS_API_URL=http://127.0.0.1:' . $apiPort . '/ns-api/v2',
+                'NS_API_TOKEN=' . HTTP_TOKEN,
+                'WEBRESPONDER_KEY=' . $key,
+                'IP_ALLOW_LIST=' . $list,
+                '',
+            ]));
+        };
+        $logged = static fn (): string => implode('', array_map('file_get_contents', glob($project . '/var/logs/*.log') ?: []));
+
+        // The servers of the PBX, as in the README. This computer is not one of them.
+        $configure(HTTP_KEY, '64.113.255.88, 64.113.255.0/24');
+        [$servers['listed'], $port] = serve(['-t', $project . '/public'], $folder . '/listed-server.log', ['AATOSMS_ENV_FILE' => ''], '/index.php');
+        $origin = 'http://127.0.0.1:' . $port;
+        $withKey = $origin . '/index.php?' . http_build_query(['key' => HTTP_KEY, 'SMSNumber' => '8455550177'] + PBX);
+        $withoutKey = $origin . '/index.php?' . http_build_query(['SMSNumber' => '8455550177'] + PBX);
+        $asked = count($api());
+
+        $refused = [
+            'a call with the right key' => http('GET', $withKey),
+            'the same as POST' => http('POST', $origin . '/index.php?key=' . HTTP_KEY, PBX),
+            'the installation check' => http('GET', $origin . '/index.php?key=' . HTTP_KEY . '&check=1'),
+            'keys of a caller' => http('GET', $origin . '/index.php?call=' . str_repeat('0', 32) . '.1&Digits=1'),
+            'another method' => http('PUT', $withKey),
+            // What a request says about its own origin does not count.
+            'a call that claims a listed address' => http(
+                'GET',
+                $withKey . '&ip=64.113.255.88&REMOTE_ADDR=64.113.255.88',
+                null,
+                ['X-Forwarded-For: 64.113.255.88', 'X-Real-IP: 64.113.255.88', 'Client-IP: 64.113.255.88', 'Forwarded: for=64.113.255.88', 'Remote-Addr: 64.113.255.88']
+            ),
+        ];
+        foreach ($refused as $what => $answer) {
+            same(403, $answer->status, $what);
+            same('Access denied.', spoken($answer), $what);
+            ok(hangsUp($answer), $what . ': hung up');
+            same(null, $answer->headers['Allow'] ?? null, $what . ': Allow header');
+        }
+        contains('WARNING [-] Request rejected: this address is not on IP_ALLOW_LIST {"ip":"127.0.0.1"}', $logged(), 'log');
+        lacks('Call started', $logged(), 'log');
+        lacks('Installation check requested', $logged(), 'log');
+        same($asked, count($api()), 'the API was not asked');
+        same(false, is_dir($project . '/var/calls'), 'no call state');
+
+        // .env is read for every request. Now this computer is on the list, and no key is set.
+        $configure('', '64.113.255.88, 64.113.255.0/24, 127.0.0.0/8');
+        $sentBefore = count($texts());
+        $menu = http('GET', $withoutKey);
+        same(200, $menu->status);
+        contains('To receive a text message at the number you are calling from', spoken($menu));
+        $done = http('POST', $origin . gather($menu)['action'], PBX + ['Digits' => '1']);
+        same('Your text message has been sent. Thank you for calling. Goodbye.', spoken($done));
+        $sent = $texts();
+        same($sentBefore + 1, count($sent));
+        same(['type' => 'sms', 'message' => Bench::SCRIPT, 'destination' => '18452632561', 'from-number' => '18455550177'], end($sent));
+        contains('"call_id":"http-test-orig","ip":"127.0.0.1"}', $logged(), 'the log of the call names the address');
+        same(200, http('GET', $withKey)->status, 'a key that is still in the address does no harm');
+
+        $report = http('GET', $origin . '/index.php?check=1');
+        same(200, $report->status);
+        contains("\n         Your address, as this server sees it: 127.0.0.1\n", $report->body, 'report');
+        contains(
+            "         Access .............. without a key, from these addresses only:\n"
+                . "                                 64.113.255.88\n"
+                . "                                 64.113.255.0/24 (64.113.255.0 to 64.113.255.255)\n"
+                . "                                 127.0.0.0/8 (127.0.0.0 to 127.255.255.255)\n",
+            $report->body,
+            'report'
+        );
+        contains("\nResult: no problems found.\n", $report->body, 'report');
+
+        // With a key in .env as well, the listed address needs it too.
+        $configure(HTTP_KEY, '127.0.0.1');
+        $noKey = http('GET', $withoutKey);
+        same(403, $noKey->status);
+        same('Access denied.', spoken($noKey));
+        contains('WARNING [-] Request rejected: the key in the URL is missing or wrong {"ip":"127.0.0.1"}', $logged(), 'log');
+        same(200, http('GET', $withKey)->status, 'with the key');
+
+        // A list that cannot be read lets nobody in: the application does not start.
+        $configure(HTTP_KEY, '127.0.0.1, 127.0.0.300');
+        $broken = http('GET', $withKey);
+        ok(hangsUp($broken), 'the call is ended');
+        lacks('press 1', $broken->body, 'answer with an unreadable list');
+        contains('ERROR   [-] Request failed: Invalid configuration: IP_ALLOW_LIST: "127.0.0.300" is not an IP address or a block of addresses.', $logged(), 'log');
+    });
+}
+
+// ---------------------------------------------------------------------------
 // HTTPS: the certificate of the API server is verified
 // ---------------------------------------------------------------------------
 

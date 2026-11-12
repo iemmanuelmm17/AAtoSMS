@@ -47,7 +47,7 @@ final class Config
     ];
 
     private const KNOWN_KEYS = [
-        'NS_API_URL', 'NS_API_TOKEN', 'NS_API_TIMEOUT', 'NS_API_CA_FILE', 'NS_DEFAULT_DOMAIN', 'WEBRESPONDER_KEY', 'APP_URL',
+        'NS_API_URL', 'NS_API_TOKEN', 'NS_API_TIMEOUT', 'NS_API_CA_FILE', 'NS_DEFAULT_DOMAIN', 'WEBRESPONDER_KEY', 'IP_ALLOW_LIST', 'APP_URL',
         'SMS_SCRIPT_OPTION', 'SMS_USER', 'SMS_NUMBER_FORMAT', 'SMS_LIMIT_PER_DESTINATION', 'SMS_LIMIT_WINDOW_MINUTES',
         'CALLER_ID_DIGIT_STYLE', 'TTS_VOICE', 'TTS_LANGUAGE', 'INPUT_TIMEOUT_SECONDS', 'INTERDIGIT_TIMEOUT_SECONDS',
         'MAX_ATTEMPTS', 'LOG_LEVEL', 'LOG_RETENTION_DAYS', 'LOG_TIMEZONE', 'STORAGE_PATH',
@@ -56,6 +56,9 @@ final class Config
     /**
      * @param string                $settingsFile the .env file the settings were read from; '' when they come from an array
      * @param string                $pointerFile  the env-path.txt that named that file; '' when none did
+     * @param string                $responderKey what the To-Web URL has to carry as key=...; '' when requests need no key
+     * @param string                $ipAllowList  the addresses that requests may come from, as written in .env (see IpList);
+     *                                            '' when they may come from anywhere
      * @param array<string, string> $prompts
      * @param list<string>          $unknownKeys  keys found in the file that this application does not use
      */
@@ -69,6 +72,7 @@ final class Config
         public readonly string $apiCaFile,
         public readonly string $defaultDomain,
         public readonly string $responderKey,
+        public readonly string $ipAllowList,
         public readonly string $appUrl,
         public readonly string $smsOption,
         public readonly string $smsUser,
@@ -294,9 +298,19 @@ final class Config
             $errors[] = 'NS_API_TOKEN contains spaces or non-printable characters.';
         }
 
+        // Who may use the application: requests that carry the key, requests from the
+        // addresses on the list, or - with both set - only requests that do both.
+        // One of the two is needed, so that the application is never open to everybody.
+        $ipAllowList = $get('IP_ALLOW_LIST');
+        array_push($errors, ...(new IpList($ipAllowList))->problems());
+
         $responderKey = $get('WEBRESPONDER_KEY');
-        if (strlen($responderKey) < self::MIN_KEY_LENGTH) {
-            $errors[] = sprintf('WEBRESPONDER_KEY is required and must be at least %d characters long.', self::MIN_KEY_LENGTH);
+        if ($responderKey === '') {
+            if ($ipAllowList === '') {
+                $errors[] = sprintf('WEBRESPONDER_KEY is required and must be at least %d characters long. It may only be left blank when IP_ALLOW_LIST is set.', self::MIN_KEY_LENGTH);
+            }
+        } elseif (strlen($responderKey) < self::MIN_KEY_LENGTH) {
+            $errors[] = sprintf('WEBRESPONDER_KEY must be at least %d characters long.', self::MIN_KEY_LENGTH);
         } elseif (preg_match('/\A[A-Za-z0-9._~-]+\z/', $responderKey) !== 1) {
             $errors[] = 'WEBRESPONDER_KEY may only contain letters, digits and . _ ~ - so it can be used in a URL as is.';
         } elseif ($apiToken !== '' && hash_equals($apiToken, $responderKey)) {
@@ -366,6 +380,7 @@ final class Config
             apiCaFile: $apiCaFile,
             defaultDomain: $defaultDomain,
             responderKey: $responderKey,
+            ipAllowList: $ipAllowList,
             appUrl: $appUrl,
             smsOption: $smsOption,
             smsUser: $smsUser,
