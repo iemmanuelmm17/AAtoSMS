@@ -618,6 +618,30 @@ test('http: repeat=yes in the address - after the text the call is forwarded bac
     same(null, forwardsTo($done));
 });
 
+test('http: option=5 in the address - the message of key 5 is the text', function () use ($entry, $texts, $callback, $log): void {
+    $pbx = ['NmsAni' => '9175550163'] + PBX;
+    $before = count($texts());
+    $menu = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'option' => '5'] + $pbx));
+    contains('calling from, 9, 1, 7, 5, 5, 5, 0, 1, 6, 3, press 1', spoken($menu));
+
+    $done = http('GET', $callback($menu) . '&Digits=1');
+    contains('has been sent', spoken($done));
+    same(1, count($texts()) - $before, 'texts sent');
+    same(['type' => 'sms', 'message' => 'uploaded message', 'destination' => '19175550163', 'from-number' => '18457747000'], $texts()[$before]);
+    contains('"option":"5","sms_user":"9000","from":"8457747000","caller":"9175550163"', $log(), 'log');
+
+    // The PBX sending its values in the body: option stays in the address.
+    $menu = http('POST', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'option' => '9']), $pbx + ['Digits' => '']);
+    http('POST', $callback($menu), $pbx + ['Digits' => '1']);
+    same('First part. Second part.', $texts()[$before + 1]['message']);
+
+    $wrong = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'option' => '10'] + $pbx));
+    contains('We are sorry', spoken($wrong));
+    ok(hangsUp($wrong), 'a value that is not a key: the call is hung up');
+    same(2, count($texts()) - $before, 'and nothing more is sent');
+    contains('Call cannot start: option "10" is not an auto attendant key (0-9 or *).', $log(), 'log');
+});
+
 test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts, $folder): void {
     $before = count($texts());
     $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000', 'repeat' => 'yes']));
@@ -654,7 +678,7 @@ test('http: log and stored data', function () use ($folder, $log): void {
     }
     $sent = array_values(array_diff(scandir($folder . '/var/sent') ?: [], ['.', '..']));
     sort($sent);
-    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '7185550142.json', '8452632561.json'], $sent, 'send records, one per destination');
+    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '7185550142.json', '8452632561.json', '9175550163.json'], $sent, 'send records, one per destination');
     same('[]', file_get_contents($folder . '/var/sent/2125550147.json'), 'the text that the API refused is not counted');
     same(3, count(json_decode((string) file_get_contents($folder . '/var/sent/3125550188.json'), true)), 'texts counted for the number that reached the limit');
 });

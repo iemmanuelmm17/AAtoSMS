@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 namespace AAtoSMS;
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 
 require_once __DIR__ . '/Config.php';
 require_once __DIR__ . '/Logger.php';

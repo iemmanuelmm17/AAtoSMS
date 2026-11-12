@@ -53,7 +53,7 @@ With repeat=yes in the To-Web URL:
 | Domain | `AccountDomain`, else `NS_DEFAULT_DOMAIN` in `.env` |
 | Auto attendant extension | `AAUser` in the URL, else `AccountUser` |
 | Prompt name of the auto attendant | `AAPrompt` in the URL, else the rule below |
-| Key whose message is the text | `SMSOption` in the URL, else `SMS_SCRIPT_OPTION` in `.env` (default `2`) |
+| Key whose message is the text | `option` in the URL, else `SMS_SCRIPT_OPTION` in `.env` (default `2`) |
 | User the text is sent as | `SMSUser` in the URL, else `SMS_USER` in `.env`, else the auto attendant extension |
 | What happens after the text | `repeat` in the URL: `yes` = back to the auto attendant; `no`, blank or absent = hang up |
 
@@ -249,6 +249,7 @@ absolute paths in `.env` (`STORAGE_PATH`, `NS_API_CA_FILE`), or a relative path 
 1. **Auto attendant.** Put the text on key 2 as a message made with text-to-speech: its
    script is the text of the SMS. Callers who press 2 hear it; this application sends the
    same text. Point another key at the Web Responder destination created in the next step.
+   The text can be on any other key: name that key with `option=` in the address.
 2. **Dial translation.** Create one with the application **To-Web** and put the address
    in the *Application Parameter* field:
 
@@ -272,14 +273,19 @@ Parameters you can add to the address:
 | --- | --- | --- |
 | `key` | **Required.** The value of `WEBRESPONDER_KEY`. | |
 | `SMSNumber` | Number the text is sent from. Blank or absent: the dialed number (`NmsDnis`). | `SMSNumber=8457747000` |
-| `SMSOption` | Auto attendant key whose message is the text (`0`-`9` or `*`). | `SMSOption=5` |
+| `option` | Auto attendant key whose message is the text: `0` to `9` (or `*`). Blank or absent: `SMS_SCRIPT_OPTION` in `.env`, which is `2` unless you change it. A value that is not a key ends the call with the apology. `SMSOption`, the first name of this parameter, still works. | `option=5` |
 | `SMSUser` | User the text is sent as: the user that owns the SMS number. | `SMSUser=7003` |
 | `AAUser` | Auto attendant extension, when it is not `AccountUser`. | `AAUser=8002` |
 | `AAPrompt` | Prompt name, when the rule does not fit. | `AAPrompt=Prompt_800202` |
 | `repeat` | What happens after the text. `yes`: the caller goes back to the auto attendant (the main menu). `no`, blank or absent: the call is hung up. | `repeat=yes` |
 
 One installation serves any number of auto attendants and domains: each dial translation
-carries its own parameters.
+carries its own parameters. For example, to send the message of key 5 and go back to the
+menu afterwards:
+
+```
+https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&SMSNumber=8457747000&option=5&repeat=yes
+```
 
 ### Back to the main menu after the text
 
@@ -352,7 +358,7 @@ With `repeat=yes` a third line follows:
 ```
 
 The value in brackets identifies the call. The same value is in every XML answer
-(`<!-- AAtoSMS 1.1.1 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+(`<!-- AAtoSMS 1.2.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
 The API token, the key and the call ids are never written to the log.
 
 | What happens | Look for | Usual cause |
@@ -362,11 +368,12 @@ The API token, the key and the call ids are never written to the log.
 | Every address of the application gives HTTP 500 (IIS: 500.19) | The error page or the Apache error log names `web.config` or `.htaccess` | The web server does not accept a safety-net file of this project (see [Security](#security)). Delete it: `web.config` on IIS, the `.htaccess` files on Apache. They are not needed when only `public` is served |
 | The call drops, or the caller hears "Access denied" | `Request rejected: the key in the URL is missing or wrong` | `key=` in the To-Web address differs from `WEBRESPONDER_KEY` |
 | The caller hears the apology right away, on every call | `Request failed: ...` in `var\logs` of the project folder | The settings cannot be read. The line says why: `.env` is not there, a value in it is wrong, or `env-path.txt` names a place without `.env` or one that the web server account cannot read. `php bin\check.php` shows the same message |
-| The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = key 2 has no text; "SMSNumber ... not a valid 10-digit number" |
+| The caller hears the apology right away | `Call cannot start: ...` | The line names it: HTTP 401 = wrong or expired token; HTTP 404 = wrong domain, extension or prompt name; "no script text" = the key has no text (key 2, or the one named by `option`); "option ... is not an auto attendant key"; "SMSNumber ... not a valid 10-digit number" |
 | The menu plays but keys do nothing | Only `Call started`, no later lines | The core does not call back. `APP_URL` blank: set it. `APP_URL` set: it is wrong (step 5 warns when its path does not fit) |
 | The caller hears the apology after pressing 1 | `Text not sent: ...` with the answer of the API | The number is not an SMS number of that user: set `SMSUser`/`SMS_USER`, or try another `SMS_NUMBER_FORMAT` |
 | "Your text message has been sent" but nothing arrives | `Text sent` with `http_status` 2xx | The API accepted the text; check the SMS number and carrier side in NetSapiens |
 | "A text message was already sent to this number recently" | `limit for this destination reached` | `SMS_LIMIT_PER_DESTINATION`: that number already got its texts for this hour |
+| The text is the message of another key than `option` names | `"option":` in the `Call started` line | It shows the key that was read. If that is not the key in the address, the call came through another dial translation, or the server runs a version older than 1.2.0, which does not know `option` and reads the key of `SMS_SCRIPT_OPTION`; the first line of the check shows the version |
 | `repeat=yes` is in the address, but the caller hears "Thank you for calling. Goodbye." and the call ends | `"repeat":` in the `Call started` line | `"repeat":false`: the address of the dial translation that the call came through has no `repeat=yes`, or the value is misspelled (then a line `repeat in the To-Web URL is neither yes nor no` precedes it). No `"repeat"` in that line at all: the server runs a version older than 1.1.0; the first line of the check shows the version |
 | The caller hears "Returning to the main menu", then the call drops | `Forwarding the call back to the auto attendant` with the address in `"to"` | The application asked for the forward and the PBX did not carry it out. Either the call has no owner (it has to reach the Web Responder through the auto attendant or another user, not straight from a phone number), or the address in the line is not the auto attendant: it is made of `AAUser`, else `AccountUser`, and `AccountDomain`. A line with `"extension"` instead of `"to"`: the server runs version 1.1.0, which forwarded to the extension alone |
 | `cURL error 60` | The `hint` at the end of the log line | PHP cannot verify the HTTPS certificate of the API server. Usually PHP has no CA certificates: download `cacert.pem` from https://curl.se/docs/caextract.html and name it in `NS_API_CA_FILE` (or in `curl.cainfo` in `php.ini`). The hint says so when instead the certificate has expired or does not match the host name in `NS_API_URL`. |

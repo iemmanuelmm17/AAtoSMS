@@ -36,12 +36,13 @@ Usage: php bin/check.php [Name=value ...]
   AccountUser=<ext>      auto attendant extension, e.g. 9000 -> reads its message text
   SMSNumber=<number>     number the text is sent from
   SendTo=<number>        sends ONE real text to this number
-  SMSOption=<key>  SMSUser=<user>  AAUser=<ext>  AAPrompt=<name>  NmsDnis=<number>
-  repeat=<yes|no>        same meaning as in the To-Web URL
+  option=<0-9>           auto attendant key whose message is the text (default 2)
+  SMSUser=<user>  AAUser=<ext>  AAPrompt=<name>  NmsDnis=<number>  repeat=<yes|no>
+                         same meaning as in the To-Web URL
 
 TEXT;
 
-$known = ['accountdomain', 'accountuser', 'smsnumber', 'sendto', 'smsoption', 'smsuser', 'aauser', 'aaprompt', 'nmsdnis', 'repeat'];
+$known = ['accountdomain', 'accountuser', 'smsnumber', 'sendto', 'option', 'smsoption', 'smsuser', 'aauser', 'aaprompt', 'nmsdnis', 'repeat'];
 $values = [];
 foreach (array_slice($argv, 1) as $argument) {
     if (in_array($argument, ['-h', '--help', '/?', 'help'], true)) {

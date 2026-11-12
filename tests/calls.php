@@ -166,19 +166,110 @@ test('3-digit auto attendant extension uses the 001 prompt name', function (): v
     same('https://pbx.example.test/ns-api/v2/domains/1180.DynaCloud/users/900/messages', $bench->api->requestsOf('POST')[0]['url']);
 });
 
-test('optional URL parameters: SMSOption, SMSUser, AAUser, AAPrompt', function (): void {
+test('optional URL parameters: option, SMSUser, AAUser, AAPrompt', function (): void {
     $bench = new Bench();
-    $bench->call(['SMSOption' => '5', 'SMSUser' => '7003', 'AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202']);
+    $bench->call(['option' => '5', 'SMSUser' => '7003', 'AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202']);
     same('https://pbx.example.test/ns-api/v2/domains/1180.DynaCloud/users/8002/autoattendants/Prompt_800202', $bench->api->requests[0]['url']);
     $bench->press('1');
     same('https://pbx.example.test/ns-api/v2/domains/1180.DynaCloud/users/7003/messages', $bench->api->requestsOf('POST')[0]['url']);
     same('uploaded message', $bench->api->texts()[0]['message']);
 
     $star = new Bench();
-    $star->call(['SMSOption' => '*']);
+    $star->call(['option' => '*']);
     $star->press('1');
     same("Star \"quoted\" & <tagged> text.\nLine two with caf\u{e9}.", $star->api->texts()[0]['message'], 'the text is sent unchanged');
     same("{\"type\":\"sms\",\"message\":\"Star \\\"quoted\\\" & <tagged> text.\\nLine two with caf\u{e9}.\",\"destination\":\"18452632561\",\"from-number\":\"18457747000\"}", $star->api->requestsOf('POST')[0]['body']);
+});
+
+test('option: the key whose message is sent - in the URL or the POST body, else SMS_SCRIPT_OPTION, else key 2', function (): void {
+    // Keys of the stand-in auto attendant that hold a text: 2, 5, 6, 9 and *.
+    $sent = static function (array $changes, array $env = [], string $method = 'GET'): string {
+        $bench = new Bench($env);
+        $bench->call($changes, $method);
+        $bench->press('1', $method);
+        same(1, count($bench->api->texts()), 'one text for ' . json_encode($changes));
+
+        return $bench->calls()[0]['option'] . ': ' . $bench->api->texts()[0]['message'];
+    };
+
+    same('2: ' . Bench::SCRIPT, $sent([]), 'no option: key 2');
+    same('2: ' . Bench::SCRIPT, $sent(['option' => '2']));
+    same('5: uploaded message', $sent(['option' => '5']));
+    same('6: For billing, press 1.', $sent(['option' => '6']));
+    same('9: First part. Second part.', $sent(['option' => '9']));
+    same('5: uploaded message', $sent(['option' => '5'], [], 'POST'), 'in the POST body');
+    same('5: uploaded message', $sent(['OPTION' => '5']), 'the name is not case-sensitive');
+    same('5: uploaded message', $sent(['Option' => ' 5 ']), 'spaces around the value do not count');
+
+    same('2: ' . Bench::SCRIPT, $sent(['option' => '']), 'blank: as if it was not there');
+    same('5: uploaded message', $sent([], ['SMS_SCRIPT_OPTION' => '5']), 'no option: SMS_SCRIPT_OPTION of .env');
+    same('5: uploaded message', $sent(['option' => ''], ['SMS_SCRIPT_OPTION' => '5']), 'blank: SMS_SCRIPT_OPTION of .env');
+    same('9: First part. Second part.', $sent(['option' => '9'], ['SMS_SCRIPT_OPTION' => '5']), 'the URL wins over .env');
+
+    // As the PBX sends it with <HttpMethod=POST>: its values in the body, ours in the URL.
+    $bench = new Bench();
+    $bench->last = $bench->send(
+        ['NmsAni' => '8452632561', 'NmsDnis' => '8457747000', 'AccountUser' => '9000', 'AccountDomain' => '1180.DynaCloud', 'Digits' => ''],
+        ['key' => Bench::KEY, 'option' => '9'],
+        'POST'
+    );
+    $bench->press('1', 'POST');
+    same('First part. Second part.', $bench->api->texts()[0]['message'], 'option in the URL of a POST request');
+    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"9",', $bench->log());
+});
+
+test('option: every key from 0 to 9 can be named', function (): void {
+    $api = json_decode(fixture('autoattendant.json'), true);
+    foreach (range(0, 9) as $key) {
+        $api['auto-attendant']['option-' . $key] = $api['auto-attendant']['option-5'];
+        $api['auto-attendant']['option-' . $key]['audio']['file-script-text'] = 'Message of key ' . $key . '.';
+    }
+    foreach (range(0, 9) as $key) {
+        $bench = new Bench();
+        $bench->api->autoAttendant = json_encode($api);
+        $bench->call(['option' => (string) $key]);
+        $bench->press('1');
+        same('Message of key ' . $key . '.', $bench->api->texts()[0]['message']);
+        contains('"option":"' . $key . '",', $bench->log());
+    }
+});
+
+test('SMSOption, the first name of option, still works; option comes first', function (): void {
+    $sent = static function (array $changes, array $env = []): string {
+        $bench = new Bench($env);
+        $bench->call($changes);
+        $bench->press('1');
+
+        return $bench->api->texts()[0]['message'];
+    };
+
+    same('uploaded message', $sent(['SMSOption' => '5']));
+    same('uploaded message', $sent(['smsoption' => '5'], ['SMS_SCRIPT_OPTION' => '9']), 'wins over .env, as before');
+    same('First part. Second part.', $sent(['option' => '9', 'SMSOption' => '5']), 'both: option');
+    same('uploaded message', $sent(['option' => '', 'SMSOption' => '5']), 'a blank option is as if it was not there');
+    same("Star \"quoted\" & <tagged> text.\nLine two with caf\u{e9}.", $sent(['SMSOption' => '*']));
+});
+
+test('option: a value that is not a key ends the call, and no other key takes its place', function (): void {
+    $cases = [
+        [['option' => '10'], 'option "10" is not an auto attendant key (0-9 or *).'],
+        [['option' => '22'], 'option "22" is not an auto attendant key (0-9 or *).'],
+        [['option' => '-1'], 'option "-1" is not an auto attendant key (0-9 or *).'],
+        [['option' => 'two'], 'option "two" is not an auto attendant key (0-9 or *).'],
+        [['option' => '#'], 'option "#" is not an auto attendant key (0-9 or *).'],
+        [['option' => '2.0'], 'option "2.0" is not an auto attendant key (0-9 or *).'],
+        [['option' => 'x', 'SMSOption' => '5'], 'option "x" is not an auto attendant key (0-9 or *).'],
+        [['option' => '', 'SMSOption' => '55'], 'SMSOption "55" is not an auto attendant key (0-9 or *).'],
+    ];
+    foreach ($cases as [$changes, $message]) {
+        $bench = new Bench(['SMS_SCRIPT_OPTION' => '5']);
+        $answer = $bench->call($changes);
+        same(ERROR, spoken($answer), $message);
+        ok(hangsUp($answer), 'hung up: ' . $message);
+        same(0, count($bench->api->requests), 'the API is not asked: ' . $message);
+        same([], $bench->calls(), 'no call is started: ' . $message);
+        contains('Call cannot start: ' . $message, $bench->log());
+    }
 });
 
 test('option 0 can be selected ("0" is a value, not a blank)', function (): void {
@@ -187,9 +278,15 @@ test('option 0 can be selected ("0" is a value, not a blank)', function (): void
 
     $byUrl = new Bench();
     $byUrl->api->autoAttendant = json_encode($api);
-    $byUrl->call(['SMSOption' => '0']);
+    $byUrl->call(['option' => '0']);
     $byUrl->press('1');
     same('uploaded message', $byUrl->api->texts()[0]['message']);
+
+    $byOldName = new Bench();
+    $byOldName->api->autoAttendant = json_encode($api);
+    $byOldName->call(['SMSOption' => '0']);
+    $byOldName->press('1');
+    same('uploaded message', $byOldName->api->texts()[0]['message']);
 
     $byEnv = new Bench(['SMS_SCRIPT_OPTION' => '0']);
     $byEnv->api->autoAttendant = json_encode($api);

@@ -56,7 +56,7 @@ final class Diagnostics
 
     /**
      * @param Request $request   the values a call would carry: AccountDomain, AccountUser,
-     *                           SMSNumber, SMSOption, SMSUser, AAUser, AAPrompt, repeat, plus SendTo
+     *                           SMSNumber, option, SMSUser, AAUser, AAPrompt, repeat, plus SendTo
      * @param bool    $allowSend whether SendTo=<number> may send one real text
      */
     public function run(Request $request, bool $allowSend = false): string

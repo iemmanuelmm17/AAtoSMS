@@ -114,6 +114,29 @@ test('check: reads the auto attendant and shows the text, without sending anythi
     same('https://pbx.example.test/ns-api/v2/domains/1180.DynaCloud/users/9000/autoattendants/Prompt_900001', $bench->api->requests[0]['url']);
 });
 
+test('check: option names the key whose message is shown as the text to send', function (): void {
+    $values = ['AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000'];
+
+    $bench = new Bench();
+    [$report, $problems] = check($bench, $values + ['option' => '5']);
+    same(0, $problems, $report);
+    contains("  [ OK ] Key 5 holds the text to send (16 characters):\n           uploaded message\n", $report);
+    lacks('Key 2 holds', $report, 'report');
+
+    $bench = new Bench(['SMS_SCRIPT_OPTION' => '9']);
+    [$report, $problems] = check($bench, $values);
+    same(0, $problems, $report);
+    contains("  [ OK ] Key 9 holds the text to send (24 characters):\n           First part. Second part.\n", $report);
+
+    [$report, $problems] = check($bench, $values + ['Option' => '5', 'SMSOption' => '2']);
+    same(0, $problems, $report);
+    contains('  [ OK ] Key 5 holds the text to send (16 characters):', $report);
+
+    [$report, $problems] = check($bench, $values + ['SMSOption' => '2']);
+    same(0, $problems, $report);
+    contains('  [ OK ] Key 2 holds the text to send (117 characters):', $report);
+});
+
 test('check: SendTo sends one real text, from the command line only', function (): void {
     $values = ['AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000', 'SMSUser' => '7003', 'SendTo' => '(845) 263-2561'];
 
@@ -215,7 +238,7 @@ if (function_exists('proc_open')) {
             ]));
 
             // No auto attendant is named, so the API is not asked: only the names are at stake.
-            [$status, $output] = $run('repeat=yes', 'SMSNumber=8457747000', 'smsoption=5', 'SMSUSER=7003', 'AAPrompt=Prompt_900001', 'NmsDnis=8457747000', 'AccountDomain=1180.DynaCloud', 'SendTo=');
+            [$status, $output] = $run('repeat=yes', 'SMSNumber=8457747000', 'option=5', 'smsoption=5', 'SMSUSER=7003', 'AAPrompt=Prompt_900001', 'NmsDnis=8457747000', 'AccountDomain=1180.DynaCloud', 'SendTo=');
             same(0, $status, $output);
             contains(' installation check', $output);
             contains('Not tested. Add the values the PBX sends', $output);
@@ -225,7 +248,8 @@ if (function_exists('proc_open')) {
             [$status, $output] = $run('Repeat=yes', 'Again=yes');
             same(2, $status, $output);
             contains("Not understood: Again=yes\n", $output);
-            contains('  repeat=<yes|no>        same meaning as in the To-Web URL', $output, 'usage');
+            contains("  option=<0-9>           auto attendant key whose message is the text (default 2)\n", $output, 'usage');
+            contains("  SMSUser=<user>  AAUser=<ext>  AAPrompt=<name>  NmsDnis=<number>  repeat=<yes|no>\n                         same meaning as in the To-Web URL\n", $output, 'usage');
             lacks('installation check', $output, 'nothing is checked');
         } finally {
             removeFolder($folder);
@@ -252,10 +276,19 @@ test('check: problems are named and counted', function (): void {
     contains('         The API rejected NS_API_TOKEN', $report);
     contains("\nResult: 1 problem(s) to fix, 0 warning(s).\n", $report);
 
-    [$report, $problems] = $run(['SMSOption' => '3']);
+    [$report, $problems] = $run(['option' => '3']);
     same(1, $problems);
     contains('  [ OK ] Prompt_900001 was read from the API', $report);
     contains('  [FAIL] Key 3 of the auto attendant has no message audio.', $report);
+
+    [$report, $problems] = $run(['SMSOption' => '3']);
+    same(1, $problems);
+    contains('  [FAIL] Key 3 of the auto attendant has no message audio.', $report);
+
+    [$report, $problems, $bench] = $run(['option' => '12']);
+    same(1, $problems);
+    contains('  [FAIL] option "12" is not an auto attendant key (0-9 or *).', $report);
+    same(0, count($bench->api->requests), 'the API is not asked');
 
     [$report, $problems] = $run(['AccountUser' => '90000']);
     same(1, $problems);

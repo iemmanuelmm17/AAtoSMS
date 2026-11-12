@@ -19,7 +19,8 @@ final class CallSetupException extends \RuntimeException
  *   domain               AccountDomain, NS_DEFAULT_DOMAIN in .env
  *   auto attendant       AAUser, AccountUser
  *   prompt name          AAPrompt, the 3/4-digit rule applied to the extension
- *   key with the text    SMSOption, SMS_SCRIPT_OPTION in .env (default 2)
+ *   key with the text    option (SMSOption, its first name, still works),
+ *                        SMS_SCRIPT_OPTION in .env (default 2)
  *   user that sends      SMSUser, SMS_USER in .env, the auto attendant extension
  *   number to send from  SMSNumber, NmsDnis
  *   after the text       repeat: yes = back to the auto attendant; no, blank or absent = hang up
@@ -60,12 +61,30 @@ final class CallPlan
             throw new CallSetupException(sprintf('AAPrompt "%s" is not a valid prompt name.', $prompt));
         }
 
-        $option = self::firstSet($request->get('SMSOption'), $config->smsOption);
-        if (!AutoAttendant::isValidOption($option)) {
-            throw new CallSetupException(sprintf('SMSOption "%s" is not an auto attendant key (0-9 or *).', $option));
+        return ['domain' => $domain, 'aa_user' => $aaUser, 'prompt' => $prompt, 'option' => self::option($request, $config)];
+    }
+
+    /**
+     * The auto attendant key whose message is the text: "option" in the To-Web URL, or
+     * SMSOption, the first name of that parameter; without both, SMS_SCRIPT_OPTION of .env.
+     * A value that is not a key stops the call: no other key takes its place, because
+     * the wrong text must not go out.
+     */
+    private static function option(Request $request, Config $config): string
+    {
+        foreach (['option', 'SMSOption'] as $name) {
+            $value = $request->get($name);
+            if ($value === '') {
+                continue;
+            }
+            if (!AutoAttendant::isValidOption($value)) {
+                throw new CallSetupException(sprintf('%s "%s" is not an auto attendant key (0-9 or *).', $name, $value));
+            }
+
+            return $value;
         }
 
-        return ['domain' => $domain, 'aa_user' => $aaUser, 'prompt' => $prompt, 'option' => $option];
+        return $config->smsOption;
     }
 
     /**
