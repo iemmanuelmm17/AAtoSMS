@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace AAtoSMS;
 
 /**
- * Builds NetSapiens Web Responder XML (v44.1+ verbs: Response, Say, Gather, Hangup).
- * Every piece of text and every attribute value is XML-escaped here.
+ * Builds NetSapiens Web Responder XML: the v44.1+ verbs Response, Say, Gather and
+ * Hangup, plus Forward. Every piece of text and every attribute value is XML-escaped here.
  */
 final class Xml
 {
@@ -37,6 +37,15 @@ final class Xml
     public static function hangup(): string
     {
         return '<Hangup/>';
+    }
+
+    /**
+     * Hands the call to $destination, an extension or a number that the PBX looks up in the
+     * dial plan of the user who owns the call. The Web Responder is not asked again.
+     */
+    public static function forward(string $destination): string
+    {
+        return '<Forward>' . self::escape($destination) . '</Forward>';
     }
 
     /** Wraps verbs in <Response>. $ref ties the document to its log lines. */

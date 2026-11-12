@@ -56,7 +56,7 @@ final class Diagnostics
 
     /**
      * @param Request $request   the values a call would carry: AccountDomain, AccountUser,
-     *                           SMSNumber, SMSOption, SMSUser, AAUser, AAPrompt, plus SendTo
+     *                           SMSNumber, SMSOption, SMSUser, AAUser, AAPrompt, repeat, plus SendTo
      * @param bool    $allowSend whether SendTo=<number> may send one real text
      */
     public function run(Request $request, bool $allowSend = false): string
@@ -299,6 +299,18 @@ final class Diagnostics
             return;
         }
 
+        $this->checkSending($request, $allowSend, $api, $source, $message);
+        $this->checkEnding($request, $source['aa_user']);
+    }
+
+    /**
+     * Who sends the text and from which number; with SendTo, one real text.
+     *
+     * @param array{domain:string, aa_user:string, prompt:string, option:string} $source
+     * @param string|null $message the text to send; null when it could not be read
+     */
+    private function checkSending(Request $request, bool $allowSend, NetSapiens $api, array $source, ?string $message): void
+    {
         $sendTo = $request->get('SendTo');
         if ($request->get('SMSNumber') === '' && $request->get('NmsDnis') === '' && $sendTo === '') {
             return;
@@ -343,6 +355,29 @@ final class Diagnostics
                 $this->note($error->hint());
             }
         }
+    }
+
+    /** What "repeat" in the To-Web URL makes of the end of a call. Shown when it is given. */
+    private function checkEnding(Request $request, string $aaUser): void
+    {
+        if ($request->get('repeat') === '') {
+            return;
+        }
+        $this->section('After the text');
+        $repeat = CallPlan::repeat($request);
+        if ($repeat === null) {
+            $this->warn(sprintf('repeat "%s" is neither yes nor no: the call is hung up, as with repeat=no.', $request->get('repeat')));
+
+            return;
+        }
+        if (!$repeat) {
+            $this->ok('repeat=no: the call is hung up');
+
+            return;
+        }
+        $this->ok(sprintf('repeat=yes: the caller is sent back to the auto attendant (forward to %s)', $aaUser));
+        $this->note('The PBX can forward only a call that a user owns, which is the case when the');
+        $this->note('auto attendant itself sends the call to this application.');
     }
 
     /**

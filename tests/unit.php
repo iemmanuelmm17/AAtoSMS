@@ -9,6 +9,7 @@ namespace AAtoSMS\Tests;
 use AAtoSMS\ApiException;
 use AAtoSMS\AutoAttendant;
 use AAtoSMS\AutoAttendantException;
+use AAtoSMS\CallPlan;
 use AAtoSMS\CallStore;
 use AAtoSMS\CallStoreException;
 use AAtoSMS\Config;
@@ -644,6 +645,28 @@ test('request: POST body first, then URL; names are case-insensitive; blanks fal
     same('[redacted]', $request->snapshot()['key']);
 });
 
+test('repeat: yes is true, no or nothing is false, anything else is null', function (): void {
+    $repeat = static fn (array $post, array $query = []): ?bool => CallPlan::repeat(new Request($post, $query));
+
+    same(false, $repeat([]), 'absent: the default is no');
+    same(false, $repeat([], ['repeat' => '']), 'blank');
+    same(true, $repeat([], ['repeat' => 'yes']), 'in the URL');
+    same(true, $repeat(['repeat' => 'yes']), 'in the POST body');
+    same(false, $repeat(['repeat' => 'no'], ['repeat' => 'yes']), 'the POST body comes first');
+    same(true, $repeat(['repeat' => ''], ['repeat' => 'yes']), 'a blank in the body falls back to the URL');
+    same(true, $repeat([], ['REPEAT' => 'YES']), 'neither name nor value is case-sensitive');
+    foreach (['y', 'true', 'on', '1', 'Yes', ' yes '] as $value) {
+        same(true, $repeat([], ['repeat' => $value]), var_export($value, true));
+    }
+    foreach (['n', 'false', 'off', '0', 'No', "no\n"] as $value) {
+        same(false, $repeat([], ['repeat' => $value]), var_export($value, true));
+    }
+    foreach (['maybe', 'yes!', 'ye', 'noo', '2', '-1', 'yes no', 'null'] as $value) {
+        same(null, $repeat([], ['repeat' => $value]), var_export($value, true));
+    }
+    same(false, $repeat([], ['repeat' => ['yes']]), 'a list is not a value');
+});
+
 // ---------------------------------------------------------------------------
 // XML
 // ---------------------------------------------------------------------------
@@ -662,6 +685,22 @@ test('xml: text and attributes are escaped', function (): void {
     );
     same('Tom & Jerry <b> "q" \'s\'', spoken($document));
     same('https://h.test/i.php?a=1&b="2"', gather($document)['action']);
+});
+
+test('xml: forward names the destination and nothing else', function (): void {
+    same('<Forward>9000</Forward>', Xml::forward('9000'));
+    same('<Forward>a&amp;b&lt;c&gt;&quot;d&quot;</Forward>', Xml::forward('a&b<c>"d"'), 'escaped like every other text');
+
+    $document = Xml::document('ab12cd34', Xml::say('Back to the menu.'), Xml::forward('9000'));
+    same(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><!-- AAtoSMS ' . \AAtoSMS\VERSION . ' ref=ab12cd34 --><Say>Back to the menu.</Say><Forward>9000</Forward></Response>',
+        $document
+    );
+    same('9000', forwardsTo($document));
+    ok(!hangsUp($document), 'a forward is not a hang up');
+    same(null, forwardsTo(Xml::document('', Xml::say('Bye.'), Xml::hangup())), 'a hang up is not a forward');
+    same(null, forwardsTo(Xml::document('', Xml::forward('9000'), Xml::hangup())), 'forward, then hang up: not counted as a forward');
+    ok(!hangsUp(Xml::document('', Xml::forward('9000'), Xml::hangup())), 'nor as a hang up');
 });
 
 test('xml: invalid bytes and control characters cannot break the document', function (): void {

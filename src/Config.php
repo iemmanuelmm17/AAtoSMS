@@ -40,6 +40,7 @@ final class Config
         'invalid_number' => 'Sorry, that is not a valid ten digit number.',
         'no_input' => 'Sorry, we did not receive a response.',
         'sent' => 'Your text message has been sent. Thank you for calling. Goodbye.',
+        'sent_repeat' => 'Your text message has been sent. Returning to the main menu.',
         'goodbye' => 'We did not receive a valid response. Goodbye.',
         'limit' => 'A text message was already sent to this number recently. Please check your messages, or try again later. Goodbye.',
         'error' => 'We are sorry, we are unable to send the text message at this time. Please try again later. Goodbye.',

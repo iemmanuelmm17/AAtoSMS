@@ -133,6 +133,102 @@ test('check: SendTo sends one real text, from the command line only', function (
     same(0, count($web->api->requestsOf('POST')), 'nothing is sent');
 });
 
+test('check: repeat in the To-Web URL is explained when it is given', function (): void {
+    $values = ['AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000'];
+    $run = static function (array $more) use ($values): array {
+        $bench = new Bench();
+        [$report, $problems] = check($bench, $more + $values);
+        same(0, count($bench->api->requestsOf('POST')), 'nothing is sent');
+
+        return [$report, $problems];
+    };
+
+    [$report, $problems] = $run(['repeat' => 'yes']);
+    same(0, $problems, $report);
+    contains(
+        "  [ OK ] Texts are sent from 18457747000 as user 9000\n"
+        . "After the text\n"
+        . "  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)\n"
+        . "         The PBX can forward only a call that a user owns, which is the case when the\n"
+        . "         auto attendant itself sends the call to this application.\n"
+        . "\nResult: no problems found.\n",
+        $report
+    );
+
+    [$report, $problems] = $run(['repeat' => 'Yes', 'AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202', 'SMSOption' => '5']);
+    same(0, $problems, $report);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 8002)', $report);
+
+    [$report, $problems] = $run(['repeat' => 'no']);
+    same(0, $problems, $report);
+    contains("After the text\n  [ OK ] repeat=no: the call is hung up\n\nResult: no problems found.\n", $report);
+
+    [$report, $problems] = $run(['repeat' => 'maybe']);
+    same(0, $problems, $report);
+    contains("After the text\n  [WARN] repeat \"maybe\" is neither yes nor no: the call is hung up, as with repeat=no.\n\nResult: no problems, 1 warning(s).\n", $report);
+
+    foreach ([[], ['repeat' => '']] as $more) {
+        [$report, $problems] = $run($more);
+        same(0, $problems, $report);
+        lacks('After the text', $report, 'report without repeat');
+        lacks('repeat', $report, 'report without repeat');
+        contains("\nResult: no problems found.\n", $report);
+    }
+
+    // Without a number to send from there is no "Sending" part; this part is shown all the same.
+    [$report, $problems] = $run(['repeat' => 'yes', 'SMSNumber' => '']);
+    same(0, $problems, $report);
+    lacks('Texts are sent from', $report);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $report);
+});
+
+if (function_exists('proc_open')) {
+    test('check on the command line: the names of the To-Web URL are accepted, other names are refused', function (): void {
+        $folder = temporaryFolder();
+        // bin/check.php as its own process, with a settings file of its own.
+        $run = static function (string ...$arguments) use ($folder): array {
+            $process = proc_open(
+                array_merge([PHP_BINARY !== '' ? PHP_BINARY : 'php', dirname(__DIR__) . '/bin/check.php'], $arguments),
+                [0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+                $pipes,
+                dirname(__DIR__),
+                array_merge(getenv(), ['AATOSMS_ENV_FILE' => $folder . '/.env'])
+            );
+            ok(is_resource($process), 'bin/check.php was started');
+            $output = (string) stream_get_contents($pipes[1]);
+            fclose($pipes[1]);
+
+            return [proc_close($process), str_replace("\r\n", "\n", $output)];
+        };
+
+        try {
+            file_put_contents($folder . '/.env', implode("\n", [
+                'NS_API_URL=https://pbx.example.test/ns-api/v2',
+                'NS_API_TOKEN=' . Bench::TOKEN,
+                'WEBRESPONDER_KEY=' . Bench::KEY,
+                'STORAGE_PATH=' . $folder . '/var',
+                '',
+            ]));
+
+            // No auto attendant is named, so the API is not asked: only the names are at stake.
+            [$status, $output] = $run('repeat=yes', 'SMSNumber=8457747000', 'smsoption=5', 'SMSUSER=7003', 'AAPrompt=Prompt_900001', 'NmsDnis=8457747000', 'AccountDomain=1180.DynaCloud', 'SendTo=');
+            same(0, $status, $output);
+            contains(' installation check', $output);
+            contains('Not tested. Add the values the PBX sends', $output);
+            contains("\nResult: no problems found.\n", $output);
+            lacks('Not understood', $output, 'output');
+
+            [$status, $output] = $run('Repeat=yes', 'Again=yes');
+            same(2, $status, $output);
+            contains("Not understood: Again=yes\n", $output);
+            contains('  repeat=<yes|no>        same meaning as in the To-Web URL', $output, 'usage');
+            lacks('installation check', $output, 'nothing is checked');
+        } finally {
+            removeFolder($folder);
+        }
+    });
+}
+
 test('check: problems are named and counted', function (): void {
     $run = static function (array $values, ?\Closure $prepare = null, array $env = []): array {
         $bench = new Bench($env);
@@ -375,13 +471,14 @@ test('check: env-path.txt.txt, as Windows Explorer makes it, is pointed out', fu
 
 test('check in the browser: index.php?key=...&check=1 answers with the report as plain text', function (): void {
     $bench = new Bench();
-    $answer = $bench->call(['check' => '1', 'SendTo' => '8452632561']);
+    $answer = $bench->call(['check' => '1', 'SendTo' => '8452632561', 'repeat' => 'yes']);
     same(200, $answer->status);
     same(['Content-Type' => 'text/plain; charset=UTF-8'], $answer->headers);
     contains('installation check', $answer->body);
     contains('  [ OK ] Prompt_900001 was read from the API', $answer->body);
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $answer->body);
     contains('  [WARN] SendTo is ignored here', $answer->body);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $answer->body);
     same(0, count($bench->api->requestsOf('POST')), 'the browser check never sends a text');
     same([], $bench->calls(), 'no call is started');
     lacks(Bench::TOKEN, $answer->body, 'report');

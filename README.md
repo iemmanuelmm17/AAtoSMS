@@ -25,6 +25,9 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
                         +-- 2 ------------------------> back to "Please enter ..."
 
 "Your text message has been sent. Thank you for calling. Goodbye."     (call is hung up)
+
+With repeat=yes in the To-Web URL:
+"Your text message has been sent. Returning to the main menu."         (back to the auto attendant)
 ```
 
 - Numbers are read back digit by digit ("eight, four, five, ...").
@@ -37,6 +40,9 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
 - If anything is wrong (API down, no text on key 2, bad settings) the caller hears a short
   apology, the call is hung up, and the reason is written to the log.
 - One call sends at most one text. A request that the PBX repeats never sends it again.
+- After the text the call is hung up. With `repeat=yes` in the To-Web URL the caller
+  goes back to the auto attendant instead: see
+  [Back to the main menu after the text](#back-to-the-main-menu-after-the-text).
 
 ## Where the values come from
 
@@ -49,6 +55,7 @@ Plain PHP: no Composer, no database, no build step. Copying the folder is the in
 | Prompt name of the auto attendant | `AAPrompt` in the URL, else the rule below |
 | Key whose message is the text | `SMSOption` in the URL, else `SMS_SCRIPT_OPTION` in `.env` (default `2`) |
 | User the text is sent as | `SMSUser` in the URL, else `SMS_USER` in `.env`, else the auto attendant extension |
+| What happens after the text | `repeat` in the URL: `yes` = back to the auto attendant; `no`, blank or absent = hang up |
 
 Prompt name rule:
 
@@ -269,9 +276,37 @@ Parameters you can add to the address:
 | `SMSUser` | User the text is sent as: the user that owns the SMS number. | `SMSUser=7003` |
 | `AAUser` | Auto attendant extension, when it is not `AccountUser`. | `AAUser=8002` |
 | `AAPrompt` | Prompt name, when the rule does not fit. | `AAPrompt=Prompt_800202` |
+| `repeat` | What happens after the text. `yes`: the caller goes back to the auto attendant (the main menu). `no`, blank or absent: the call is hung up. | `repeat=yes` |
 
 One installation serves any number of auto attendants and domains: each dial translation
 carries its own parameters.
+
+### Back to the main menu after the text
+
+By default the call is hung up once the text was sent. Add `repeat=yes` to the address to
+send the caller back to the auto attendant instead:
+
+```
+https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&SMSNumber=8457747000&repeat=yes
+```
+
+The caller then hears "Your text message has been sent. Returning to the main menu."
+(`PROMPT_SENT_REPEAT` in `.env`), and the application tells the PBX to forward the call
+to the extension of the auto attendant (`AAUser`, else `AccountUser`), which answers it
+the way it answers a new call.
+
+- `repeat=no`, a blank value or no `repeat` at all hang up, as before. Upper or lower case
+  does not matter, and `true`/`1` and `false`/`0` are understood as well. Any other value
+  hangs up too and leaves a warning in the log; the text is sent all the same.
+- Only a call whose text was sent goes back. A call that ends for another reason (the text
+  could not be sent, the limit for that number is reached, no valid answer after three
+  tries) is hung up as before.
+- The PBX forwards only a call that a user owns. That is the case when the auto attendant
+  itself sends the call to the Web Responder destination, as in step 1. A call that a
+  phone number sends straight to that destination has no owner, and is not forwarded.
+- A caller who is back in the menu can press the key again and get the text once more;
+  for the application that is a new call. The limit per number applies
+  (`SMS_LIMIT_PER_DESTINATION`, 3 per hour by default).
 
 ## Settings
 
@@ -302,8 +337,14 @@ A normal call writes two lines:
 2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Text sent {"to":"18452632561","from":"18457747000",...,"http_status":200,"api_response":"{\"code\":202,\"message\":\"Accepted\"}",...}
 ```
 
+With `repeat=yes` a third line follows:
+
+```
+2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Forwarding the call back to the auto attendant {"extension":"9000"}
+```
+
 The value in brackets identifies the call. The same value is in every XML answer
-(`<!-- AAtoSMS 1.0.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+(`<!-- AAtoSMS 1.1.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
 The API token, the key and the call ids are never written to the log.
 
 | What happens | Look for | Usual cause |
@@ -318,6 +359,8 @@ The API token, the key and the call ids are never written to the log.
 | The caller hears the apology after pressing 1 | `Text not sent: ...` with the answer of the API | The number is not an SMS number of that user: set `SMSUser`/`SMS_USER`, or try another `SMS_NUMBER_FORMAT` |
 | "Your text message has been sent" but nothing arrives | `Text sent` with `http_status` 2xx | The API accepted the text; check the SMS number and carrier side in NetSapiens |
 | "A text message was already sent to this number recently" | `limit for this destination reached` | `SMS_LIMIT_PER_DESTINATION`: that number already got its texts for this hour |
+| `repeat=yes` is in the address, but the caller hears "Thank you for calling. Goodbye." and the call ends | `"repeat":` in the `Call started` line | `"repeat":false`: the address of the dial translation that the call came through has no `repeat=yes`, or the value is misspelled (then a line `repeat in the To-Web URL is neither yes nor no` precedes it). No `"repeat"` in that line at all: the server runs a version older than 1.1.0; the first line of the check shows the version |
+| The caller hears "Returning to the main menu", then the call drops | `Forwarding the call back to the auto attendant` with the extension | The application asked for the forward and the PBX did not carry it out. Either the call has no owner (it has to reach the Web Responder through the auto attendant or another user, not straight from a phone number), or the dial plan of that user does not lead to the extension named in the line |
 | `cURL error 60` | The `hint` at the end of the log line | PHP cannot verify the HTTPS certificate of the API server. Usually PHP has no CA certificates: download `cacert.pem` from https://curl.se/docs/caextract.html and name it in `NS_API_CA_FILE` (or in `curl.cainfo` in `php.ini`). The hint says so when instead the certificate has expired or does not match the host name in `NS_API_URL`. |
 | `cURL error 6`, `7` or `28` | The `hint` at the end of the log line | The web server cannot reach the API: DNS, firewall, or a wrong `NS_API_URL` |
 

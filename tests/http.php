@@ -590,9 +590,37 @@ test('http: calls that arrive together cannot exceed the limit per destination',
     same(3, count($texts()) - $before, 'texts sent (the limit is 3)');
 });
 
+test('http: repeat=yes in the address - after the text the call is forwarded back to the auto attendant', function () use ($entry, $texts, $callback, $log): void {
+    // As the core sends it with <HttpMethod=POST>: its values in the body, ours in the address.
+    $pbx = ['NmsAni' => '7185550142'] + PBX;
+    $before = count($texts());
+    $menu = http('POST', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'repeat' => 'yes']), $pbx + ['Digits' => '']);
+    contains('calling from, 7, 1, 8, 5, 5, 5, 0, 1, 4, 2, press 1', spoken($menu));
+
+    $done = http('POST', $callback($menu), $pbx + ['Digits' => '1']);
+    same(200, $done->status);
+    same('application/xml; charset=UTF-8', $done->headers['Content-Type'] ?? null);
+    same('Your text message has been sent. Returning to the main menu.', spoken($done));
+    same('9000', forwardsTo($done), 'forwarded to the extension of the auto attendant');
+    ok(!hangsUp($done), 'the call is not hung up');
+    same(1, count($texts()) - $before, 'texts sent');
+    same('17185550142', $texts()[$before]['destination']);
+
+    same($done->body, http('POST', $callback($menu), $pbx + ['Digits' => '1'])->body, 'a repeated request gets the same answer');
+    same(1, count($texts()) - $before, 'and no second text');
+    contains('Forwarding the call back to the auto attendant {"extension":"9000"}', $log());
+
+    // The same caller without repeat in the address is hung up, as before.
+    $menu = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY] + $pbx));
+    $done = http('GET', $callback($menu) . '&Digits=1');
+    same('Your text message has been sent. Thank you for calling. Goodbye.', spoken($done));
+    ok(hangsUp($done), 'the call is hung up');
+    same(null, forwardsTo($done));
+});
+
 test('http: installation check through the web server', function () use ($entry, $scriptPath, $ownServers, $texts, $folder): void {
     $before = count($texts());
-    $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000']));
+    $report = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY, 'check' => '1', 'AccountDomain' => '1180.DynaCloud', 'AccountUser' => '9000', 'SMSNumber' => '8457747000', 'repeat' => 'yes']));
     same(200, $report->status);
     same('text/plain; charset=UTF-8', $report->headers['Content-Type'] ?? null);
     contains($ownServers ? '(cli-server, ' : '  [ OK ] PHP ' . PHP_MAJOR_VERSION . '.', $report->body, 'report');
@@ -601,6 +629,7 @@ test('http: installation check through the web server', function () use ($entry,
     contains(' can be written by this PHP', $report->body, 'report');
     contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $report->body, 'report');
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $report->body, 'report');
     contains("\nResult: no problems found.\n", $report->body, 'report');
     lacks(HTTP_KEY, $report->body, 'report');
     lacks(HTTP_TOKEN, $report->body, 'report');
@@ -625,7 +654,7 @@ test('http: log and stored data', function () use ($folder, $log): void {
     }
     $sent = array_values(array_diff(scandir($folder . '/var/sent') ?: [], ['.', '..']));
     sort($sent);
-    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '8452632561.json'], $sent, 'send records, one per destination');
+    same(['2015551234.json', '2125550147.json', '3125550188.json', '6465550123.json', '7185550142.json', '8452632561.json'], $sent, 'send records, one per destination');
     same('[]', file_get_contents($folder . '/var/sent/2125550147.json'), 'the text that the API refused is not counted');
     same(3, count(json_decode((string) file_get_contents($folder . '/var/sent/3125550188.json'), true)), 'texts counted for the number that reached the limit');
 });

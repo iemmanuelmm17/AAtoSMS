@@ -12,6 +12,7 @@ const MENU = 'To receive a text message at the number you are calling from, eigh
 const ENTER = 'Please enter the ten digit mobile number, starting with the area code.';
 const CONFIRM_5551234 = 'You entered two, zero, one, five, five, five, one, two, three, four. To send the text message to this number, press 1. To enter a different number, press 2.';
 const SENT = 'Your text message has been sent. Thank you for calling. Goodbye.';
+const SENT_REPEAT = 'Your text message has been sent. Returning to the main menu.';
 const GOODBYE = 'We did not receive a valid response. Goodbye.';
 const ERROR = 'We are sorry, we are unable to send the text message at this time. Please try again later. Goodbye.';
 
@@ -43,6 +44,7 @@ test('call: press 1 to text the number the caller is calling from', function ():
     same(200, $done->status);
     same(SENT, spoken($done));
     ok(hangsUp($done), 'the call is hung up after the text');
+    same(null, forwardsTo($done), 'and not forwarded: the address has no repeat=yes');
 
     $posts = $bench->api->requestsOf('POST');
     same(1, count($posts));
@@ -56,7 +58,7 @@ test('call: press 1 to text the number the caller is calling from', function ():
 
     $log = $bench->log();
     contains('INFO    [', $log);
-    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","nms_ani":"8452632561","nms_dnis":"8457747000","message_characters":117,"call_id":"20261111-abc123"}', $log);
+    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","repeat":false,"nms_ani":"8452632561","nms_dnis":"8457747000","message_characters":117,"call_id":"20261111-abc123"}', $log);
     contains('Text sent {"to":"18452632561","from":"18457747000","domain":"1180.DynaCloud","sms_user":"9000","entered_by_caller":false,"http_status":200,"api_response":"{\"code\":202,\"message\":\"Accepted\"}","characters":117}', $log);
 });
 
@@ -485,6 +487,209 @@ test('a call that goes back and forth forever is stopped', function (): void {
 });
 
 // ---------------------------------------------------------------------------
+// After the text: hang up, or back to the auto attendant (repeat=yes)
+// ---------------------------------------------------------------------------
+
+test('repeat=yes: after the text the call is forwarded back to the auto attendant', function (): void {
+    $bench = new Bench(['LOG_LEVEL' => 'info']);
+    same(MENU, spoken($bench->call(['repeat' => 'yes'])), 'the questions are the same');
+
+    $done = $bench->press('1');
+    same(200, $done->status);
+    same(SENT_REPEAT, spoken($done), 'no goodbye: the call goes on');
+    same('9000', forwardsTo($done), 'to the extension of the auto attendant');
+    ok(!hangsUp($done), 'no hang up');
+    contains('.</Say><Forward>9000</Forward></Response>', $done->body, 'said first, forwarded after that');
+    same(
+        [['type' => 'sms', 'message' => Bench::SCRIPT, 'destination' => '18452632561', 'from-number' => '18457747000']],
+        $bench->api->texts(),
+        'the text is the same as without repeat'
+    );
+    same(['done', 'sent', true], [$bench->calls()[0]['stage'], $bench->calls()[0]['sms'], $bench->calls()[0]['repeat']]);
+
+    $lines = explode("\n", trim($bench->log()));
+    same(3, count($lines), $bench->log());
+    contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","repeat":true,', $lines[0]);
+    contains('Text sent {"to":"18452632561"', $lines[1]);
+    contains('INFO    [', $lines[2]);
+    contains('Forwarding the call back to the auto attendant {"extension":"9000"}', $lines[2]);
+});
+
+test('repeat=yes: also after a number that the caller typed', function (): void {
+    $bench = new Bench();
+    $bench->call(['repeat' => 'yes']);
+    same(ENTER, spoken($bench->press('2')));
+    same(CONFIRM_5551234, spoken($bench->press('2015551234')));
+    $done = $bench->press('1');
+    same(SENT_REPEAT, spoken($done));
+    same('9000', forwardsTo($done));
+    same('12015551234', $bench->api->texts()[0]['destination']);
+});
+
+test('repeat: yes forwards; no, blank and absent hang up; in the URL or in the POST body', function (): void {
+    $ending = static function (array $changes, string $method = 'GET'): string {
+        $bench = new Bench();
+        $bench->call($changes, $method);
+        $done = $bench->press('1', $method);
+        same(1, count($bench->api->texts()), 'the text goes out either way');
+        lacks('neither yes nor no', $bench->log(), 'log');
+
+        return match (true) {
+            forwardsTo($done) !== null && !hangsUp($done) => 'forward to ' . forwardsTo($done) . ': ' . spoken($done),
+            hangsUp($done) => 'hang up: ' . spoken($done),
+            default => 'neither: ' . $done->body,
+        };
+    };
+
+    foreach (['yes', 'YES', 'Yes', ' yes ', 'y', 'true', 'on', '1'] as $value) {
+        same('forward to 9000: ' . SENT_REPEAT, $ending(['repeat' => $value]), var_export($value, true));
+    }
+    foreach ([null, '', ' ', 'no', 'NO', 'No', 'n', 'false', 'off', '0'] as $value) {
+        same('hang up: ' . SENT, $ending(['repeat' => $value]), var_export($value, true));
+    }
+    same('forward to 9000: ' . SENT_REPEAT, $ending(['repeat' => 'yes'], 'POST'), 'POST body');
+    same('forward to 9000: ' . SENT_REPEAT, $ending(['REPEAT' => 'yes']), 'the name is not case-sensitive');
+    same('forward to 9000: ' . SENT_REPEAT, $ending(['Repeat' => 'Yes'], 'POST'), 'the name is not case-sensitive');
+
+    // As the PBX sends it with <HttpMethod=POST>: its values in the body, ours in the URL.
+    $bench = new Bench();
+    $bench->last = $bench->send(
+        ['NmsAni' => '8452632561', 'NmsDnis' => '8457747000', 'AccountUser' => '9000', 'AccountDomain' => '1180.DynaCloud', 'Digits' => ''],
+        ['key' => Bench::KEY, 'SMSNumber' => '8455550199', 'repeat' => 'yes'],
+        'POST'
+    );
+    same('9000', forwardsTo($bench->press('1', 'POST')), 'repeat=yes in the URL of a POST request');
+});
+
+test('repeat=yes: the call goes back to the auto attendant that the text was read from', function (): void {
+    $other = new Bench();
+    $other->call(['AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202', 'SMSOption' => '5', 'SMSUser' => '7003', 'repeat' => 'yes']);
+    $done = $other->press('1');
+    same('8002', forwardsTo($done), 'AAUser, not AccountUser and not SMSUser');
+    contains('Forwarding the call back to the auto attendant {"extension":"8002"}', $other->log());
+
+    $short = new Bench();
+    $short->call(['AccountUser' => '900', 'repeat' => 'yes']);
+    same('900', forwardsTo($short->press('1')), '3-digit extension');
+});
+
+test('repeat=yes: the wording comes from PROMPT_SENT_REPEAT, with the voice of the other prompts', function (): void {
+    $bench = new Bench(['PROMPT_SENT_REPEAT' => 'Sent & "done". Back to <the> menu.', 'PROMPT_SENT' => 'Sent. Bye.', 'TTS_VOICE' => 'female', 'TTS_LANGUAGE' => 'en-US']);
+    $bench->call(['repeat' => 'yes']);
+    $done = $bench->press('1');
+    same('Sent & "done". Back to <the> menu.', spoken($done));
+    contains('<Say voice="female" language="en-US">Sent &amp; &quot;done&quot;. Back to &lt;the&gt; menu.</Say><Forward>9000</Forward>', $done->body);
+
+    $bench->call();
+    same('Sent. Bye.', spoken($bench->press('1')), 'without repeat the usual wording stays');
+});
+
+test('repeat=yes: a call that ends without a text is hung up as before', function (): void {
+    $ended = static function (Bench $bench, $answer, string $heard, string $what): void {
+        same($heard, spoken($answer), $what);
+        ok(hangsUp($answer), $what . ': hung up');
+        same(null, forwardsTo($answer), $what . ': not forwarded');
+        lacks('<Forward', $answer->body, $what);
+        lacks('Forwarding the call', $bench->log(), $what);
+    };
+
+    $refused = new Bench();
+    $refused->api->postAnswers = [FakeApi::answer(400, '{"code":400,"message":"from-number is not an SMS number of this user"}')];
+    $refused->call(['repeat' => 'yes']);
+    $ended($refused, $refused->press('1'), ERROR, 'the API refuses the text');
+
+    $limited = new Bench(['SMS_LIMIT_PER_DESTINATION' => '1']);
+    $limited->call(['repeat' => 'yes']);
+    same('9000', forwardsTo($limited->press('1')), 'the first text goes out');
+    $limited->call(['repeat' => 'yes']);
+    $second = $limited->press('1');
+    same(1, count($limited->api->texts()), 'the caller came back and pressed the key again: no second text');
+    same('A text message was already sent to this number recently. Please check your messages, or try again later. Goodbye.', spoken($second));
+    ok(hangsUp($second) && forwardsTo($second) === null, 'limit reached: hung up');
+
+    $silent = new Bench();
+    $silent->call(['repeat' => 'yes']);
+    $silent->press('');
+    $silent->press('9');
+    $ended($silent, $silent->press(''), GOODBYE, 'no valid answer');
+
+    $unreadable = new Bench();
+    $unreadable->api->getAnswers = [FakeApi::answer(404, '{"code":404,"message":"Not Found"}')];
+    $ended($unreadable, $unreadable->call(['repeat' => 'yes']), ERROR, 'the auto attendant cannot be read');
+});
+
+test('repeat: a value that is neither yes nor no is pointed out in the log, and the text is still sent', function (): void {
+    foreach (['maybe', 'yess', 'yes,no', '2', '"yes"'] as $value) {
+        $bench = new Bench(['LOG_LEVEL' => 'info']);
+        same(MENU, spoken($bench->call(['repeat' => $value])), 'the call starts: ' . $value);
+        $done = $bench->press('1');
+        same(SENT, spoken($done), $value);
+        ok(hangsUp($done) && forwardsTo($done) === null, 'hung up, as with repeat=no: ' . $value);
+        same(1, count($bench->api->texts()), 'the text went out: ' . $value);
+
+        $lines = explode("\n", trim($bench->log()));
+        same(3, count($lines), $bench->log());
+        contains('WARNING [', $lines[0]);
+        contains('] repeat in the To-Web URL is neither yes nor no: this call is hung up after the text ' . json_encode(['repeat' => $value], JSON_UNESCAPED_SLASHES), $lines[0]);
+        contains('"repeat":false,', $lines[1]);
+    }
+});
+
+test('repeat=yes: a step that the PBX asks for again is answered the same way, without a second text', function (): void {
+    $bench = new Bench();
+    $bench->call(['repeat' => 'yes']);
+    $callback = $bench->callbackQuery();
+
+    $first = $bench->send(['Digits' => '1'], $callback);
+    $second = $bench->send(['Digits' => '1'], $callback);
+    same('9000', forwardsTo($first));
+    same($first->body, $second->body);
+    same(1, count($bench->api->texts()), 'exactly one text');
+
+    // Nothing in the answer leads back here. A request for a later step ends the call.
+    $next = $bench->send(['Digits' => '1'], ['call' => substr($callback['call'], 0, 33) . '2']);
+    same('', spoken($next));
+    ok(hangsUp($next), 'only a hang up');
+    same(1, count($bench->api->texts()));
+});
+
+test('repeat=yes: when the text went out but the answer was lost, the repeated step forwards and sends nothing', function (): void {
+    $bench = new Bench();
+    $bench->call(['repeat' => 'yes']);
+
+    // What is on disk when PHP stops right after the API accepted the text.
+    $file = glob($bench->config->storagePath . '/calls/*.json')[0];
+    $state = json_decode((string) file_get_contents($file), true, 16, JSON_THROW_ON_ERROR);
+    same(['none', 1, []], [$state['sms'], $state['step'], $state['responses']]);
+    $state['sms'] = 'sent';
+    $state['destination'] = '8452632561';
+    file_put_contents($file, json_encode($state, JSON_THROW_ON_ERROR));
+
+    $again = $bench->press('1');
+    same(SENT_REPEAT, spoken($again));
+    same('9000', forwardsTo($again));
+    same(0, count($bench->api->requestsOf('POST')), 'the API is not asked to send it again');
+    contains('Send step repeated; not sending again {"previous_result":"sent"}', $bench->log());
+});
+
+test('a call that was in progress while the application was updated is hung up after the text', function (): void {
+    $bench = new Bench();
+    $bench->call();
+
+    // The state of a call that an older version started says nothing about repeat.
+    $file = glob($bench->config->storagePath . '/calls/*.json')[0];
+    $state = json_decode((string) file_get_contents($file), true, 16, JSON_THROW_ON_ERROR);
+    same(false, $state['repeat']);
+    unset($state['repeat']);
+    file_put_contents($file, json_encode($state, JSON_THROW_ON_ERROR));
+
+    $done = $bench->press('1');
+    same(SENT, spoken($done));
+    ok(hangsUp($done) && forwardsTo($done) === null, 'hung up');
+    same(1, count($bench->api->texts()));
+});
+
+// ---------------------------------------------------------------------------
 // One text per call, whatever the PBX repeats
 // ---------------------------------------------------------------------------
 
@@ -841,7 +1046,7 @@ test('the saved state of a call holds what is needed and no secret', function ()
     $bench->press('2');
     $state = $bench->calls()[0];
     same(
-        ['domain', 'aa_user', 'prompt', 'option', 'sms_user', 'from', 'caller', 'ref', 'created', 'call_id', 'message', 'stage', 'attempts', 'pending', 'typed', 'pound', 'sms', 'step', 'responses'],
+        ['domain', 'aa_user', 'prompt', 'option', 'sms_user', 'from', 'caller', 'repeat', 'ref', 'created', 'call_id', 'message', 'stage', 'attempts', 'pending', 'typed', 'pound', 'sms', 'step', 'responses'],
         array_keys($state)
     );
     same(['enter', 2, 'none', Bench::SCRIPT, '20261111-abc123'], [$state['stage'], $state['step'], $state['sms'], $state['message'], $state['call_id']]);

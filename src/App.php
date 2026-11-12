@@ -160,6 +160,11 @@ final class App
             $call = CallPlan::source($request, $this->config);
             $call += CallPlan::sender($request, $this->config, $call['aa_user']);
             $call['caller'] = PhoneNumber::normalize($request->get('NmsAni')) ?? '';
+            $repeat = CallPlan::repeat($request);
+            if ($repeat === null) {
+                $this->logger->warning('repeat in the To-Web URL is neither yes nor no: this call is hung up after the text', ['repeat' => $request->get('repeat')]);
+            }
+            $call['repeat'] = $repeat === true;
             $message = AutoAttendant::script(
                 $this->api->autoAttendant($call['domain'], $call['aa_user'], $call['prompt']),
                 $call['option']
