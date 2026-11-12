@@ -300,7 +300,7 @@ final class Diagnostics
         }
 
         $this->checkSending($request, $allowSend, $api, $source, $message);
-        $this->checkEnding($request, $source['aa_user']);
+        $this->checkEnding($request, $source);
     }
 
     /**
@@ -357,8 +357,12 @@ final class Diagnostics
         }
     }
 
-    /** What "repeat" in the To-Web URL makes of the end of a call. Shown when it is given. */
-    private function checkEnding(Request $request, string $aaUser): void
+    /**
+     * What "repeat" in the To-Web URL makes of the end of a call. Shown when it is given.
+     *
+     * @param array{domain:string, aa_user:string, prompt:string, option:string} $source
+     */
+    private function checkEnding(Request $request, array $source): void
     {
         if ($request->get('repeat') === '') {
             return;
@@ -375,7 +379,10 @@ final class Diagnostics
 
             return;
         }
-        $this->ok(sprintf('repeat=yes: the caller is sent back to the auto attendant (forward to %s)', $aaUser));
+        $this->ok(sprintf(
+            'repeat=yes: the caller is sent back to the auto attendant (forward to %s)',
+            AutoAttendant::sipAddress($source['aa_user'], $source['domain'])
+        ));
         $this->note('The PBX can forward only a call that a user owns, which is the case when the');
         $this->note('auto attendant itself sends the call to this application.');
     }

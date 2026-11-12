@@ -40,8 +40,8 @@ final class Xml
     }
 
     /**
-     * Hands the call to $destination, an extension or a number that the PBX looks up in the
-     * dial plan of the user who owns the call. The Web Responder is not asked again.
+     * Hands the call to $destination: a SIP address (sip:9000@1180.DynaCloud), an extension
+     * or a number. The Web Responder is not asked again.
      */
     public static function forward(string $destination): string
     {

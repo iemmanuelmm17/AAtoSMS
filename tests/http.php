@@ -601,14 +601,14 @@ test('http: repeat=yes in the address - after the text the call is forwarded bac
     same(200, $done->status);
     same('application/xml; charset=UTF-8', $done->headers['Content-Type'] ?? null);
     same('Your text message has been sent. Returning to the main menu.', spoken($done));
-    same('9000', forwardsTo($done), 'forwarded to the extension of the auto attendant');
+    same('sip:9000@1180.DynaCloud', forwardsTo($done), 'forwarded to the auto attendant: AccountUser in the AccountDomain of the request body');
     ok(!hangsUp($done), 'the call is not hung up');
     same(1, count($texts()) - $before, 'texts sent');
     same('17185550142', $texts()[$before]['destination']);
 
     same($done->body, http('POST', $callback($menu), $pbx + ['Digits' => '1'])->body, 'a repeated request gets the same answer');
     same(1, count($texts()) - $before, 'and no second text');
-    contains('Forwarding the call back to the auto attendant {"extension":"9000"}', $log());
+    contains('Forwarding the call back to the auto attendant {"to":"sip:9000@1180.DynaCloud"}', $log());
 
     // The same caller without repeat in the address is hung up, as before.
     $menu = http('GET', $entry . '?' . http_build_query(['key' => HTTP_KEY] + $pbx));
@@ -629,7 +629,7 @@ test('http: installation check through the web server', function () use ($entry,
     contains(' can be written by this PHP', $report->body, 'report');
     contains('  [ OK ] Prompt_900001 was read from the API', $report->body, 'report');
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $report->body, 'report');
-    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $report->body, 'report');
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:9000@1180.DynaCloud)', $report->body, 'report');
     contains("\nResult: no problems found.\n", $report->body, 'report');
     lacks(HTTP_KEY, $report->body, 'report');
     lacks(HTTP_TOKEN, $report->body, 'report');

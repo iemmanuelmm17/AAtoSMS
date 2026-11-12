@@ -497,9 +497,9 @@ test('repeat=yes: after the text the call is forwarded back to the auto attendan
     $done = $bench->press('1');
     same(200, $done->status);
     same(SENT_REPEAT, spoken($done), 'no goodbye: the call goes on');
-    same('9000', forwardsTo($done), 'to the extension of the auto attendant');
+    same('sip:9000@1180.DynaCloud', forwardsTo($done), 'to the auto attendant: its extension, in the domain of the call');
     ok(!hangsUp($done), 'no hang up');
-    contains('.</Say><Forward>9000</Forward></Response>', $done->body, 'said first, forwarded after that');
+    contains('.</Say><Forward>sip:9000@1180.DynaCloud</Forward></Response>', $done->body, 'said first, forwarded after that');
     same(
         [['type' => 'sms', 'message' => Bench::SCRIPT, 'destination' => '18452632561', 'from-number' => '18457747000']],
         $bench->api->texts(),
@@ -512,7 +512,7 @@ test('repeat=yes: after the text the call is forwarded back to the auto attendan
     contains('Call started {"domain":"1180.DynaCloud","aa_user":"9000","prompt":"Prompt_900001","option":"2","sms_user":"9000","from":"8457747000","caller":"8452632561","repeat":true,', $lines[0]);
     contains('Text sent {"to":"18452632561"', $lines[1]);
     contains('INFO    [', $lines[2]);
-    contains('Forwarding the call back to the auto attendant {"extension":"9000"}', $lines[2]);
+    contains('Forwarding the call back to the auto attendant {"to":"sip:9000@1180.DynaCloud"}', $lines[2]);
 });
 
 test('repeat=yes: also after a number that the caller typed', function (): void {
@@ -522,7 +522,7 @@ test('repeat=yes: also after a number that the caller typed', function (): void 
     same(CONFIRM_5551234, spoken($bench->press('2015551234')));
     $done = $bench->press('1');
     same(SENT_REPEAT, spoken($done));
-    same('9000', forwardsTo($done));
+    same('sip:9000@1180.DynaCloud', forwardsTo($done));
     same('12015551234', $bench->api->texts()[0]['destination']);
 });
 
@@ -542,14 +542,14 @@ test('repeat: yes forwards; no, blank and absent hang up; in the URL or in the P
     };
 
     foreach (['yes', 'YES', 'Yes', ' yes ', 'y', 'true', 'on', '1'] as $value) {
-        same('forward to 9000: ' . SENT_REPEAT, $ending(['repeat' => $value]), var_export($value, true));
+        same('forward to sip:9000@1180.DynaCloud: ' . SENT_REPEAT, $ending(['repeat' => $value]), var_export($value, true));
     }
     foreach ([null, '', ' ', 'no', 'NO', 'No', 'n', 'false', 'off', '0'] as $value) {
         same('hang up: ' . SENT, $ending(['repeat' => $value]), var_export($value, true));
     }
-    same('forward to 9000: ' . SENT_REPEAT, $ending(['repeat' => 'yes'], 'POST'), 'POST body');
-    same('forward to 9000: ' . SENT_REPEAT, $ending(['REPEAT' => 'yes']), 'the name is not case-sensitive');
-    same('forward to 9000: ' . SENT_REPEAT, $ending(['Repeat' => 'Yes'], 'POST'), 'the name is not case-sensitive');
+    same('forward to sip:9000@1180.DynaCloud: ' . SENT_REPEAT, $ending(['repeat' => 'yes'], 'POST'), 'POST body');
+    same('forward to sip:9000@1180.DynaCloud: ' . SENT_REPEAT, $ending(['REPEAT' => 'yes']), 'the name is not case-sensitive');
+    same('forward to sip:9000@1180.DynaCloud: ' . SENT_REPEAT, $ending(['Repeat' => 'Yes'], 'POST'), 'the name is not case-sensitive');
 
     // As the PBX sends it with <HttpMethod=POST>: its values in the body, ours in the URL.
     $bench = new Bench();
@@ -558,19 +558,76 @@ test('repeat: yes forwards; no, blank and absent hang up; in the URL or in the P
         ['key' => Bench::KEY, 'SMSNumber' => '8455550199', 'repeat' => 'yes'],
         'POST'
     );
-    same('9000', forwardsTo($bench->press('1', 'POST')), 'repeat=yes in the URL of a POST request');
+    same('sip:9000@1180.DynaCloud', forwardsTo($bench->press('1', 'POST')), 'repeat=yes in the URL of a POST request');
 });
 
 test('repeat=yes: the call goes back to the auto attendant that the text was read from', function (): void {
     $other = new Bench();
     $other->call(['AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202', 'SMSOption' => '5', 'SMSUser' => '7003', 'repeat' => 'yes']);
     $done = $other->press('1');
-    same('8002', forwardsTo($done), 'AAUser, not AccountUser and not SMSUser');
-    contains('Forwarding the call back to the auto attendant {"extension":"8002"}', $other->log());
+    same('sip:8002@1180.DynaCloud', forwardsTo($done), 'AAUser, not AccountUser and not SMSUser');
+    contains('Forwarding the call back to the auto attendant {"to":"sip:8002@1180.DynaCloud"}', $other->log());
 
     $short = new Bench();
     $short->call(['AccountUser' => '900', 'repeat' => 'yes']);
-    same('900', forwardsTo($short->press('1')), '3-digit extension');
+    same('sip:900@1180.DynaCloud', forwardsTo($short->press('1')), '3-digit extension');
+});
+
+test('repeat=yes: the domain of the forward is the AccountDomain that the PBX sends', function (): void {
+    // In the URL of a GET request ...
+    $get = new Bench();
+    $get->call(['AccountDomain' => 'Acme-2.example', 'repeat' => 'yes']);
+    same('sip:9000@Acme-2.example', forwardsTo($get->press('1')), 'written as the PBX wrote it');
+    contains('/domains/Acme-2.example/users/9000/messages', $get->api->requestsOf('POST')[0]['url'], 'the domain the text was sent in');
+    contains('Forwarding the call back to the auto attendant {"to":"sip:9000@Acme-2.example"}', $get->log());
+
+    // ... and in the body, as the PBX sends it with <HttpMethod=POST>: its values in the body, ours in the URL.
+    $post = new Bench();
+    $post->last = $post->send(
+        ['NmsAni' => '8452632561', 'NmsDnis' => '8457747000', 'AccountUser' => '7777', 'AccountDomain' => '2290.Other', 'Digits' => ''],
+        ['key' => Bench::KEY, 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202', 'SMSOption' => '5', 'repeat' => 'yes'],
+        'POST'
+    );
+    same('sip:8002@2290.Other', forwardsTo($post->press('1', 'POST')), 'AAUser of the URL in the AccountDomain of the body');
+
+    // The body comes first, as for every value.
+    $both = new Bench();
+    $both->last = $both->send(
+        ['NmsAni' => '8452632561', 'NmsDnis' => '8457747000', 'AccountUser' => '9000', 'AccountDomain' => 'body.example', 'Digits' => ''],
+        ['key' => Bench::KEY, 'AccountDomain' => 'url.example', 'repeat' => 'yes'],
+        'POST'
+    );
+    same('sip:9000@body.example', forwardsTo($both->press('1', 'POST')));
+
+    // A PBX that sends no domain: NS_DEFAULT_DOMAIN of .env, the domain the text is sent in.
+    $default = new Bench(['NS_DEFAULT_DOMAIN' => 'fallback.example']);
+    $default->call(['AccountDomain' => null, 'repeat' => 'yes']);
+    same('sip:9000@fallback.example', forwardsTo($default->press('1')));
+    $default->call(['repeat' => 'yes']);
+    same('sip:9000@1180.DynaCloud', forwardsTo($default->press('1')), 'the domain of the request wins over NS_DEFAULT_DOMAIN');
+});
+
+test('repeat=yes: a domain or an extension that cannot be part of an address ends the call before anything is sent', function (): void {
+    $cases = [
+        ['AccountDomain' => '1180.DynaCloud;user=phone'],
+        ['AccountDomain' => 'x@evil.example'],
+        ['AccountDomain' => '1180.DynaCloud:5060'],
+        ['AccountDomain' => 'a b'],
+        ['AccountDomain' => 'a>b'],
+        ['AAUser' => '9000@evil.example'],
+        ['AAUser' => 'sip:9000'],
+        ['AAUser' => '9000;x=1'],
+        ['AccountUser' => '9000?x=1'],
+    ];
+    foreach ($cases as $changes) {
+        $bench = new Bench();
+        $answer = $bench->call($changes + ['repeat' => 'yes']);
+        same(ERROR, spoken($answer), json_encode($changes));
+        ok(hangsUp($answer) && forwardsTo($answer) === null, 'hung up: ' . json_encode($changes));
+        same(0, count($bench->api->requests), 'the API is not asked: ' . json_encode($changes));
+        same([], $bench->calls(), 'no call is started');
+        contains('Call cannot start: ', $bench->log());
+    }
 });
 
 test('repeat=yes: the wording comes from PROMPT_SENT_REPEAT, with the voice of the other prompts', function (): void {
@@ -578,7 +635,7 @@ test('repeat=yes: the wording comes from PROMPT_SENT_REPEAT, with the voice of t
     $bench->call(['repeat' => 'yes']);
     $done = $bench->press('1');
     same('Sent & "done". Back to <the> menu.', spoken($done));
-    contains('<Say voice="female" language="en-US">Sent &amp; &quot;done&quot;. Back to &lt;the&gt; menu.</Say><Forward>9000</Forward>', $done->body);
+    contains('<Say voice="female" language="en-US">Sent &amp; &quot;done&quot;. Back to &lt;the&gt; menu.</Say><Forward>sip:9000@1180.DynaCloud</Forward>', $done->body);
 
     $bench->call();
     same('Sent. Bye.', spoken($bench->press('1')), 'without repeat the usual wording stays');
@@ -600,7 +657,7 @@ test('repeat=yes: a call that ends without a text is hung up as before', functio
 
     $limited = new Bench(['SMS_LIMIT_PER_DESTINATION' => '1']);
     $limited->call(['repeat' => 'yes']);
-    same('9000', forwardsTo($limited->press('1')), 'the first text goes out');
+    same('sip:9000@1180.DynaCloud', forwardsTo($limited->press('1')), 'the first text goes out');
     $limited->call(['repeat' => 'yes']);
     $second = $limited->press('1');
     same(1, count($limited->api->texts()), 'the caller came back and pressed the key again: no second text');
@@ -642,7 +699,7 @@ test('repeat=yes: a step that the PBX asks for again is answered the same way, w
 
     $first = $bench->send(['Digits' => '1'], $callback);
     $second = $bench->send(['Digits' => '1'], $callback);
-    same('9000', forwardsTo($first));
+    same('sip:9000@1180.DynaCloud', forwardsTo($first));
     same($first->body, $second->body);
     same(1, count($bench->api->texts()), 'exactly one text');
 
@@ -667,7 +724,7 @@ test('repeat=yes: when the text went out but the answer was lost, the repeated s
 
     $again = $bench->press('1');
     same(SENT_REPEAT, spoken($again));
-    same('9000', forwardsTo($again));
+    same('sip:9000@1180.DynaCloud', forwardsTo($again));
     same(0, count($bench->api->requestsOf('POST')), 'the API is not asked to send it again');
     contains('Send step repeated; not sending again {"previous_result":"sent"}', $bench->log());
 });

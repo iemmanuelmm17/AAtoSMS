@@ -33,6 +33,16 @@ final class AutoAttendant
     }
 
     /**
+     * SIP address of an auto attendant: its extension in its domain, e.g.
+     * sip:9000@1180.DynaCloud. It is where a call is forwarded to go back to the menu.
+     * Both parts have to be valid (isValidUser, isValidDomain), so nothing needs escaping.
+     */
+    public static function sipAddress(string $extension, string $domain): string
+    {
+        return 'sip:' . $extension . '@' . $domain;
+    }
+
+    /**
      * Prompt name of an auto attendant extension:
      *
      *   3-digit extension  Prompt_xxx001    (123  -> Prompt_123001)

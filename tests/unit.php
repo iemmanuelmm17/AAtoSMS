@@ -49,6 +49,24 @@ test('prompt name: other lengths are refused with advice', function (): void {
 });
 
 // ---------------------------------------------------------------------------
+// SIP address of the auto attendant (where a call goes back to with repeat=yes)
+// ---------------------------------------------------------------------------
+
+test('sip address: sip:<extension>@<domain>, with both parts as they are', function (): void {
+    same('sip:9000@1180.DynaCloud', AutoAttendant::sipAddress('9000', '1180.DynaCloud'));
+    same('sip:900@1180.DynaCloud', AutoAttendant::sipAddress('900', '1180.DynaCloud'));
+    same('sip:Front_Desk-1@Acme-2.example', AutoAttendant::sipAddress('Front_Desk-1', 'Acme-2.example'), 'case is kept');
+
+    // Nothing that has a meaning in an address, or in XML, passes as an extension or a domain.
+    foreach (['@', ':', ';', '?', '&', '=', ',', '+', '$', '%', '/', '\\', ' ', "\t", '<', '>', '"', "'", '(', ')', '[', ']', '*', '#', '!', '~'] as $character) {
+        ok(!AutoAttendant::isValidUser('90' . $character . '00'), 'extension with ' . var_export($character, true));
+        ok(!AutoAttendant::isValidDomain('1180' . $character . 'DynaCloud'), 'domain with ' . var_export($character, true));
+        ok(!AutoAttendant::isValidUser($character . '9000'), 'extension that starts with ' . var_export($character, true));
+        ok(!AutoAttendant::isValidDomain($character . '1180.DynaCloud'), 'domain that starts with ' . var_export($character, true));
+    }
+});
+
+// ---------------------------------------------------------------------------
 // SMS text taken from the auto attendant
 // ---------------------------------------------------------------------------
 
@@ -688,6 +706,7 @@ test('xml: text and attributes are escaped', function (): void {
 });
 
 test('xml: forward names the destination and nothing else', function (): void {
+    same('<Forward>sip:9000@1180.DynaCloud</Forward>', Xml::forward('sip:9000@1180.DynaCloud'));
     same('<Forward>9000</Forward>', Xml::forward('9000'));
     same('<Forward>a&amp;b&lt;c&gt;&quot;d&quot;</Forward>', Xml::forward('a&b<c>"d"'), 'escaped like every other text');
 

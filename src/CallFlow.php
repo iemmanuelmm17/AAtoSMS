@@ -17,7 +17,8 @@ namespace AAtoSMS;
  *   done     the text was sent (or could not be) and the call is hung up
  *
  * With repeat=yes in the To-Web URL, a caller whose text was sent is not hung up
- * but handed back to the auto attendant, and hears its main menu again.
+ * but handed back to the auto attendant, and hears its main menu again: the call
+ * is forwarded to sip:<auto attendant extension>@<domain of the call>.
  *
  * No answer or a wrong key repeats the prompt; after MAX_ATTEMPTS tries in a row
  * the caller hears a goodbye and the call ends without a text.
@@ -266,9 +267,10 @@ final class CallFlow
     {
         $state['stage'] = 'done';
         if ($prompt === 'sent' && ($state['repeat'] ?? false) === true) {
-            $this->logger->info('Forwarding the call back to the auto attendant', ['extension' => $state['aa_user']]);
+            $address = AutoAttendant::sipAddress((string) $state['aa_user'], (string) $state['domain']);
+            $this->logger->info('Forwarding the call back to the auto attendant', ['to' => $address]);
 
-            return Xml::document($state['ref'], $this->say($this->config->prompts['sent_repeat']), Xml::forward((string) $state['aa_user']));
+            return Xml::document($state['ref'], $this->say($this->config->prompts['sent_repeat']), Xml::forward($address));
         }
 
         return Xml::document($state['ref'], $this->say($this->config->prompts[$prompt]), Xml::hangup());

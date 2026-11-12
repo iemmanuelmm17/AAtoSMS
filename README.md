@@ -292,8 +292,16 @@ https://your-server/aatosms/index.php?key=YOUR_WEBRESPONDER_KEY&SMSNumber=845774
 
 The caller then hears "Your text message has been sent. Returning to the main menu."
 (`PROMPT_SENT_REPEAT` in `.env`), and the application tells the PBX to forward the call
-to the extension of the auto attendant (`AAUser`, else `AccountUser`), which answers it
-the way it answers a new call.
+to the auto attendant, which answers it the way it answers a new call. The answer to the
+PBX ends with the SIP address of the auto attendant:
+
+```xml
+<Forward>sip:9000@1180.DynaCloud</Forward>
+```
+
+The address is `sip:<extension>@<domain>`. The extension is `AAUser` when the To-Web URL
+has it, else `AccountUser`. The domain is the `AccountDomain` that the PBX sends with the
+request (`NS_DEFAULT_DOMAIN` in `.env` if it sends none).
 
 - `repeat=no`, a blank value or no `repeat` at all hang up, as before. Upper or lower case
   does not matter, and `true`/`1` and `false`/`0` are understood as well. Any other value
@@ -340,11 +348,11 @@ A normal call writes two lines:
 With `repeat=yes` a third line follows:
 
 ```
-2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Forwarding the call back to the auto attendant {"extension":"9000"}
+2026-11-11T09:30:09-05:00 INFO    [4f9a2c1b] Forwarding the call back to the auto attendant {"to":"sip:9000@1180.DynaCloud"}
 ```
 
 The value in brackets identifies the call. The same value is in every XML answer
-(`<!-- AAtoSMS 1.1.0 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
+(`<!-- AAtoSMS 1.1.1 ref=4f9a2c1b -->`), so a call trace can be matched to its log lines.
 The API token, the key and the call ids are never written to the log.
 
 | What happens | Look for | Usual cause |
@@ -360,7 +368,7 @@ The API token, the key and the call ids are never written to the log.
 | "Your text message has been sent" but nothing arrives | `Text sent` with `http_status` 2xx | The API accepted the text; check the SMS number and carrier side in NetSapiens |
 | "A text message was already sent to this number recently" | `limit for this destination reached` | `SMS_LIMIT_PER_DESTINATION`: that number already got its texts for this hour |
 | `repeat=yes` is in the address, but the caller hears "Thank you for calling. Goodbye." and the call ends | `"repeat":` in the `Call started` line | `"repeat":false`: the address of the dial translation that the call came through has no `repeat=yes`, or the value is misspelled (then a line `repeat in the To-Web URL is neither yes nor no` precedes it). No `"repeat"` in that line at all: the server runs a version older than 1.1.0; the first line of the check shows the version |
-| The caller hears "Returning to the main menu", then the call drops | `Forwarding the call back to the auto attendant` with the extension | The application asked for the forward and the PBX did not carry it out. Either the call has no owner (it has to reach the Web Responder through the auto attendant or another user, not straight from a phone number), or the dial plan of that user does not lead to the extension named in the line |
+| The caller hears "Returning to the main menu", then the call drops | `Forwarding the call back to the auto attendant` with the address in `"to"` | The application asked for the forward and the PBX did not carry it out. Either the call has no owner (it has to reach the Web Responder through the auto attendant or another user, not straight from a phone number), or the address in the line is not the auto attendant: it is made of `AAUser`, else `AccountUser`, and `AccountDomain`. A line with `"extension"` instead of `"to"`: the server runs version 1.1.0, which forwarded to the extension alone |
 | `cURL error 60` | The `hint` at the end of the log line | PHP cannot verify the HTTPS certificate of the API server. Usually PHP has no CA certificates: download `cacert.pem` from https://curl.se/docs/caextract.html and name it in `NS_API_CA_FILE` (or in `curl.cainfo` in `php.ini`). The hint says so when instead the certificate has expired or does not match the host name in `NS_API_URL`. |
 | `cURL error 6`, `7` or `28` | The `hint` at the end of the log line | The web server cannot reach the API: DNS, firewall, or a wrong `NS_API_URL` |
 

@@ -148,7 +148,7 @@ test('check: repeat in the To-Web URL is explained when it is given', function (
     contains(
         "  [ OK ] Texts are sent from 18457747000 as user 9000\n"
         . "After the text\n"
-        . "  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)\n"
+        . "  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:9000@1180.DynaCloud)\n"
         . "         The PBX can forward only a call that a user owns, which is the case when the\n"
         . "         auto attendant itself sends the call to this application.\n"
         . "\nResult: no problems found.\n",
@@ -157,7 +157,11 @@ test('check: repeat in the To-Web URL is explained when it is given', function (
 
     [$report, $problems] = $run(['repeat' => 'Yes', 'AccountUser' => '7777', 'AAUser' => '8002', 'AAPrompt' => 'Prompt_800202', 'SMSOption' => '5']);
     same(0, $problems, $report);
-    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 8002)', $report);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:8002@1180.DynaCloud)', $report);
+
+    [$report, $problems] = $run(['repeat' => 'yes', 'AccountDomain' => 'Acme-2.example']);
+    same(0, $problems, $report);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:9000@Acme-2.example)', $report);
 
     [$report, $problems] = $run(['repeat' => 'no']);
     same(0, $problems, $report);
@@ -179,7 +183,7 @@ test('check: repeat in the To-Web URL is explained when it is given', function (
     [$report, $problems] = $run(['repeat' => 'yes', 'SMSNumber' => '']);
     same(0, $problems, $report);
     lacks('Texts are sent from', $report);
-    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $report);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:9000@1180.DynaCloud)', $report);
 });
 
 if (function_exists('proc_open')) {
@@ -478,7 +482,7 @@ test('check in the browser: index.php?key=...&check=1 answers with the report as
     contains('  [ OK ] Prompt_900001 was read from the API', $answer->body);
     contains('  [ OK ] Texts are sent from 18457747000 as user 9000', $answer->body);
     contains('  [WARN] SendTo is ignored here', $answer->body);
-    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to 9000)', $answer->body);
+    contains('  [ OK ] repeat=yes: the caller is sent back to the auto attendant (forward to sip:9000@1180.DynaCloud)', $answer->body);
     same(0, count($bench->api->requestsOf('POST')), 'the browser check never sends a text');
     same([], $bench->calls(), 'no call is started');
     lacks(Bench::TOKEN, $answer->body, 'report');
